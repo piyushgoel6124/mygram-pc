@@ -260,6 +260,13 @@ def admin_dashboard():
 
 def start_server():
     log_to_file("[System] Starting fail-safe server...")
+    
+    # --- Route Debugger ---
+    print("\n--- Registered Routes ---")
+    for rule in app.url_map.iter_rules():
+        print(f"Route: {rule.rule} | Methods: {rule.methods}")
+    print("------------------------\n")
+
     start_cloudflared_tunnel()
     threading.Thread(target=health_monitor_loop, name="HealthMonitor", daemon=True).start()
     threading.Thread(target=worker_loop, name="ScraperWorker", daemon=True).start()
