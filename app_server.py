@@ -248,12 +248,12 @@ def start_cloudflared_tunnel():
             log_to_file("[Cloudflare Error] 'cloudflared' command not found. Please install it or add it to PATH.")
             return
 
-        log_to_file("[Cloudflare] Attempting to start PERMANENT tunnel (f637317c) via HTTP2...")
+        log_to_file("[Cloudflare] Starting tunnel in quiet mode...")
         try:
-            # Command for permanent named tunnel with HTTP2 protocol (more stable on VPS)
+            # Command for permanent named tunnel with HTTP2 protocol
             cmd = [
                 "cloudflared", "tunnel", "--protocol", "http2", "--ha-connections", "1",
-                "--url", "http://localhost:5030",
+                "--loglevel", "warn", "--url", "http://localhost:5030",
                 "run", "f637317c-9221-477c-ab6b-efadd6e8bf0a"
             ]
             process = subprocess.Popen(
@@ -262,8 +262,7 @@ def start_cloudflared_tunnel():
             )
             for line in iter(process.stdout.readline, ''):
                 if line.strip():
-                    # Print to console as well for now to debug
-                    log_to_file(f"[Cloudflare] {line.strip()}", to_console=True)
+                    log_to_file(f"[Cloudflare] {line.strip()}", to_console=False)
         except Exception as e:
             log_to_file(f"[Cloudflare Error] Could not start tunnel: {e}")
             log_to_file("[System] Tunnel failed, but server is running locally at http://localhost:5030")
