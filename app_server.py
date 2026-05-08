@@ -288,23 +288,38 @@ def app_stream():
     
     def generate():
         last_idx = 0
+        last_heartbeat = time.time()
+        
         while True:
+            # 1. Heartbeat to keep connection alive
+            if time.time() - last_heartbeat > 15:
+                yield ": keep-alive\n\n"
+                last_heartbeat = time.time()
+
             with scrape_tasks_lock:
                 task = scrape_tasks.get(req_id)
-                if not task: break
+                if not task: 
+                    yield "data: [SYSTEM] Task not found.\n\n"
+                    break
                 
-                # Send new logs only
+                # 2. Send new logs
                 if len(task["logs"]) > last_idx:
                     for i in range(last_idx, len(task["logs"])):
                         yield f"data: {task['logs'][i]}\n\n"
                     last_idx = len(task["logs"])
                 
-                if task["status"] in ["completed", "error"]:
+                # 3. Break if finished
+                if task["status"] in ["completed", "error", "cancelled"]:
+                    # Final signal
                     yield f"data: [SYSTEM] Task finished with status: {task['status']}\n\n"
                     break
+            
             time.sleep(1)
 
-    return Response(stream_with_context(generate()), mimetype='text/event-stream')
+    response = Response(stream_with_context(generate()), mimetype='text/event-stream')
+    response.headers['Cache-Control'] = 'no-cache'
+    response.headers['X-Accel-Buffering'] = 'no'
+    return response
 
 @app.route('/download/<req_id>', methods=['GET'])
 def get_results(req_id):

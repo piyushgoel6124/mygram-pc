@@ -42,56 +42,45 @@ def scrape_since_reel(reel_url, logger=None, cancel_event=None, auth_info=None):
         if not match: return [], None
         target_shortcode = match.group(1)
 
-        # Step 2: Identify Author
+        # Step 2: Identify Author (Lightweight - No data enrichment yet)
         target_data = page.evaluate("""async ({shortcode, app_id, asbd_id, doc_id}) => {
             try {
                 const csrf = document.cookie.split('; ').find(row => row.startsWith('csrftoken='))?.split('=')[1] || "";
                 const res = await fetch("https://www.instagram.com/graphql/query", {
                     method: "POST",
-                    headers: {
-                        "Content-Type": "application/x-www-form-urlencoded",
-                        "X-CSRFToken": csrf,
-                        "X-IG-App-ID": app_id, "X-ASBD-ID": asbd_id
-                    },
+                    headers: { "Content-Type": "application/x-www-form-urlencoded", "X-CSRFToken": csrf, "X-IG-App-ID": app_id, "X-ASBD-ID": asbd_id },
                     body: new URLSearchParams({ variables: JSON.stringify({ shortcode }), doc_id: doc_id }).toString(),
                 });
                 const json = await res.json();
                 const m = json?.data?.xdt_shortcode_media;
                 if (!m) return { error: "No media data" };
-                return { 
-                    username: m.owner?.username, 
-                    timestamp: m.taken_at_timestamp,
-                    data: {
-                        shortcode: m.shortcode,
-                        author: m.owner?.username,
-                        likes: m.edge_media_preview_like?.count || m.edge_liked_by?.count || 0,
-                        comments: m.edge_media_to_parent_comment?.count || 0,
-                        views: m.video_view_count || 0,
-                        plays: m.video_play_count || 0,
-                        date: m.taken_at_timestamp ? new Date(m.taken_at_timestamp * 1000).toISOString() : ""
-                    }
-                };
+                return { username: m.owner?.username, timestamp: m.taken_at_timestamp };
             } catch (e) { return { error: e.message }; }
         }""", {"shortcode": target_shortcode, "app_id": APP_ID, "asbd_id": ASBD_ID, "doc_id": DOC_ID})
 
         if not target_data or "error" in target_data:
             err = target_data.get('error', 'Unknown error')
             log(f"Failed to identify author: {err}")
-            
-            # If blocked or feedback required, trigger hot-swap
             if any(x in str(err).lower() for x in ["feedback_required", "block", "login", "checkpoint"]):
                 mark_session_sleep(current_session)
-                
             return [], None
 
         username = target_data['username']
         target_ts = target_data['timestamp']
-        all_reels = [target_data['data']]
+        all_reels = [] # Start empty, exactly like old code
         
-        # Navigate and Scroll
+        # Navigate and Scroll (With Retry to prevent '1 reel' timeout issues)
         profile_url = f"https://www.instagram.com/{username}/reels/"
-        page.goto(profile_url)
-        page.wait_for_timeout(3000)
+        for attempt in range(1, 3):
+            try:
+                log(f"Navigating to profile (Attempt {attempt})...")
+                page.goto(profile_url, timeout=60000)
+                page.wait_for_timeout(3000)
+                break
+            except Exception as e:
+                if attempt == 2: raise e
+                log(f"Profile navigation failed, retrying... ({e})")
+                page.wait_for_timeout(5000)
         
         log(f"Scrolling {username}'s profile...")
         found_target = False
