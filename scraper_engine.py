@@ -106,12 +106,20 @@ def scrape_since_reel(reel_url, logger=None, cancel_event=None, auth_info=None):
                 return [...new Set(links.map(a => a.href.split('/').filter(Boolean).pop()))];
             }""")
 
-            for sc in new_links:
-                if sc in scanned_shortcodes: continue
-                scanned_shortcodes.add(sc)
-                
-                # Fetch data for this reel
-                reel_info = page.evaluate("""async ({shortcode, app_id, asbd_id, doc_id}) => {
+            # BATCH ENRICHMENT: Process up to 12 new reels at once (High Performance)
+            to_enrich = [sc for sc in new_links if sc not in scanned_shortcodes][:12]
+            if not to_enrich:
+                page.mouse.wheel(0, 2000)
+                page.wait_for_timeout(1000)
+                continue
+
+            for sc in to_enrich: scanned_shortcodes.add(sc)
+            
+            log(f"Enriching batch of {len(to_enrich)} reels...")
+            
+            # This JS function fetches multiple reels in parallel inside the browser
+            batch_results = page.evaluate("""async ({shortcodes, app_id, asbd_id, doc_id}) => {
+                const results = await Promise.all(shortcodes.map(async (shortcode) => {
                     try {
                         const csrf = document.cookie.split('; ').find(row => row.startsWith('csrftoken='))?.split('=')[1] || "";
                         const res = await fetch("https://www.instagram.com/graphql/query", {
@@ -122,31 +130,34 @@ def scrape_since_reel(reel_url, logger=None, cancel_event=None, auth_info=None):
                         const json = await res.json();
                         const m = json?.data?.xdt_shortcode_media;
                         if (!m) return null;
-                        const views = m.video_view_count || 0;
-                        const plays = m.video_play_count || 0;
+                        const v = m.video_view_count || 0;
+                        const p = m.video_play_count || 0;
                         return {
-                            shortcode: m.shortcode,
-                            author: m.owner?.username,
+                            shortcode: m.shortcode, author: m.owner?.username,
                             likes: m.edge_media_preview_like?.count || m.edge_liked_by?.count || 0,
                             comments: m.edge_media_to_parent_comment?.count || 0,
-                            views: views, plays: plays,
-                            hook_percentage: plays > 0 ? ((views / plays) * 100).toFixed(2) : "0.00",
+                            views: v, plays: p,
+                            hook_percentage: p > 0 ? ((v / p) * 100).toFixed(2) : "0.00",
                             date: m.taken_at_timestamp ? new Date(m.taken_at_timestamp * 1000).toISOString() : "",
                             timestamp: m.taken_at_timestamp
                         };
                     } catch (e) { return null; }
-                }""", {"shortcode": sc, "app_id": APP_ID, "asbd_id": ASBD_ID, "doc_id": DOC_ID})
+                }));
+                return results.filter(r => r !== null);
+            }""", {"shortcodes": to_enrich, "app_id": APP_ID, "asbd_id": ASBD_ID, "doc_id": DOC_ID})
 
-                if reel_info:
-                    if reel_info['timestamp'] < target_ts:
+            if batch_results:
+                for reel in batch_results:
+                    if reel['timestamp'] < target_ts:
                         found_target = True
                         break
-                    all_reels.append(reel_info)
-                    log(f"Collected: {sc} ({len(all_reels)} total)")
+                    all_reels.append(reel)
+                
+                log(f"Progress: {len(all_reels)} reels collected.")
 
             if found_target: break
-            page.mouse.wheel(0, 2000)
-            page.wait_for_timeout(1500)
+            page.mouse.wheel(0, 3000)
+            page.wait_for_timeout(1000)
         
         return all_reels, username
 

@@ -275,6 +275,16 @@ def get_results(req_id):
             return jsonify({"error": "Results not ready"}), 404
         return send_from_directory(OUTPUTS_DIR, f"{req_id}.csv", as_attachment=True)
 
+@app.route('/cancel/<req_id>', methods=['GET', 'POST'])
+def app_cancel(req_id):
+    with scrape_tasks_lock:
+        task = scrape_tasks.get(req_id)
+        if task:
+            task["event"].set()
+            task["status"] = "cancelled"
+            return jsonify({"status": "success", "message": "Task cancelled"})
+    return jsonify({"error": "Task not found"}), 404
+
 def start_cloudflared_tunnel():
     """Starts the Cloudflare tunnel in a background thread."""
     def run_tunnel():
