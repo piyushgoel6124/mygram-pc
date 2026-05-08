@@ -6,7 +6,7 @@ APP_ID = "936619743392459"
 ASBD_ID = "129477"
 
 # Security
-API_SECRET = "mygram_secure_key_2026"
+API_SECRET = "MyGram_Security_Key_2026"
 ADMIN_USER = "admin"
 ADMIN_PASS = "lollipop"
 
