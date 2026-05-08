@@ -153,6 +153,61 @@ def get_next_session_with_status():
     if available:
         return available[0], 0, False
     
-    # Return shortest wait
-    waits = [stats["sleep_until"] - now for stats in _session_stats.values() if stats.get("sleep_until", 0) > now]
-    return None, min(waits) if waits else 60, True
+def test_headless_session():
+    """Simple test to see if a session can reach Instagram feed."""
+    sessions = get_all_sessions()
+    if not sessions:
+        print("No sessions found.")
+        return
+    
+    print("\nSelect a session to test:")
+    for i, s in enumerate(sessions):
+        print(f"{i+1}. {os.path.basename(s)}")
+    
+    idx = input("\nChoice: ").strip()
+    try:
+        sel = sessions[int(idx)-1]
+        with sync_playwright() as p:
+            print(f"Testing {os.path.basename(sel)}...")
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context(storage_state=sel)
+            page = context.new_page()
+            page.goto("https://www.instagram.com/", timeout=60000)
+            page.wait_for_timeout(3000)
+            
+            if "login" in page.url:
+                print("[FAIL] Session expired or invalid.")
+            else:
+                print(f"[SUCCESS] Reached: {page.title()}")
+            browser.close()
+    except Exception as e:
+        print(f"Test Error: {e}")
+
+def fix_session_headed():
+    """Opens a session in headed mode for manual checkpoint clearing."""
+    sessions = get_all_sessions()
+    if not sessions:
+        print("No sessions found.")
+        return
+    
+    print("\nSelect session to fix (Headed):")
+    for i, s in enumerate(sessions):
+        print(f"{i+1}. {os.path.basename(s)}")
+    
+    idx = input("\nChoice: ").strip()
+    try:
+        sel = sessions[int(idx)-1]
+        print(f"\n[FIX MODE] Opening {os.path.basename(sel)} in HEADED mode...")
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=False)
+            context = browser.new_context(storage_state=sel)
+            page = context.new_page()
+            page.goto("https://www.instagram.com/")
+            
+            print("\n>>> BROWSER OPEN. Clear checkpoints/notifications manually.")
+            input(">>> Press ENTER here when done to SAVE and CLOSE...")
+            context.storage_state(path=sel)
+            browser.close()
+            print("[DONE] Session updated.")
+    except Exception as e:
+        print(f"Error: {e}")

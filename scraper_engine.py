@@ -88,5 +88,23 @@ def scrape_since_reel(reel_url, logger=None, cancel_event=None, auth_info=None):
     except Exception as e:
         log(f"Scrape Error: {e}")
         return [], None
-    finally:
-        release_pooled_browser(current_session)
+def scrape_reel(url):
+    """CLI helper to scrape a single reel."""
+    all_reels, username = scrape_since_reel(url)
+    if all_reels:
+        print(f"\n[SUCCESS] Scraped data for author: {username}")
+        import json
+        print(json.dumps(all_reels[0], indent=2))
+    else:
+        print("[FAIL] Could not scrape reel.")
+
+def scrape_profile(username):
+    """CLI helper to scrape all reels from a profile."""
+    # This uses a simple placeholder for now or can call the core logic
+    print(f"Scraping profile: {username} (Starting CLI mode)...")
+    url = f"https://www.instagram.com/{username}/reels/"
+    results, found_user = scrape_since_reel(url)
+    if results:
+        print(f"[DONE] Collected {len(results)} reels.")
+    else:
+        print("[FAIL] No results found.")
