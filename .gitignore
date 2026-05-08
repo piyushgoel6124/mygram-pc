@@ -1,0 +1,18 @@
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.env
+
+# Project specific
+sessions/
+outputs/
+logggs.txt
+*.csv
+*.pem
+.cloudflared/
+
+# IDE
+.vscode/
+.idea/

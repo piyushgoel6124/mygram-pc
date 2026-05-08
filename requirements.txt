@@ -1,0 +1,7 @@
+playwright
+requests
+psutil
+flask
+flask-cors
+pandas
+openpyxl
