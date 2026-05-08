@@ -41,13 +41,16 @@ def health_monitor_loop():
             except:
                 status.append("FLASK: UNREACHABLE")
 
-            # 2. Check Cloudflare Process
-            cf_running = False
-            for proc in psutil.process_iter(['name']):
-                if 'cloudflared' in proc.info['name'].lower():
-                    cf_running = True
-                    break
-            status.append(f"TUNNEL: {'OK' if cf_running else 'CRASHED'}")
+            # 2. Check Public Tunnel Reachability
+            try:
+                from config import PUBLIC_URL
+                res_pub = requests.get(f"{PUBLIC_URL}/ping", timeout=8)
+                if res_pub.status_code == 200:
+                    status.append("TUNNEL: OK")
+                else:
+                    status.append("TUNNEL: LINK_ERROR")
+            except:
+                status.append("TUNNEL: OFFLINE")
 
             # 3. Check Worker Thread
             # (Simple check: is the thread alive)
@@ -114,6 +117,11 @@ def run_background_scrape(session_id):
 @app.route('/ping')
 def ping():
     return "pong", 200
+
+@app.route('/favicon.ico')
+def favicon():
+    return send_from_directory(os.path.join(app.root_path, 'static'),
+                               'favicon.ico', mimetype='image/vnd.microsoft.icon')
 
 @app.route('/api/admin/login', methods=['POST'])
 def admin_login():
