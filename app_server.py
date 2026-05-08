@@ -238,10 +238,16 @@ def app_status(req_id=None):
     with scrape_tasks_lock:
         task = scrape_tasks.get(req_id)
         if not task: return jsonify({"error": "Task not found"}), 404
-        return jsonify({
+        
+        response = {
             "status": task["status"],
-            "logs": task["logs"][-10:] # Send more logs for better UI
-        })
+            "logs": task["logs"][-10:]
+        }
+        
+        if task["status"] == "completed":
+            response["download_url"] = f"{request.host_url.rstrip('/')}/download/{req_id}"
+            
+        return jsonify(response)
 
 @app.route('/stream', methods=['GET'])
 def app_stream():
@@ -267,7 +273,7 @@ def app_stream():
 
     return Response(stream_with_context(generate()), mimetype='text/event-stream')
 
-@app.route('/results/<req_id>', methods=['GET'])
+@app.route('/download/<req_id>', methods=['GET'])
 def get_results(req_id):
     with scrape_tasks_lock:
         task = scrape_tasks.get(req_id)

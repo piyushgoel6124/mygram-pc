@@ -96,8 +96,9 @@ def scrape_since_reel(reel_url, logger=None, cancel_event=None, auth_info=None):
         log(f"Scrolling {username}'s profile...")
         found_target = False
         scanned_shortcodes = {target_shortcode}
+        last_new_reel_time = time.time()
 
-        for scroll_idx in range(1, 46): # Max 15 scrolls
+        for scroll_idx in range(1, 46): 
             if is_cancelled(): break
             
             # Extract visible reels
@@ -106,62 +107,84 @@ def scrape_since_reel(reel_url, logger=None, cancel_event=None, auth_info=None):
                 return [...new Set(links.map(a => a.href.split('/').filter(Boolean).pop()))];
             }""")
 
-            # BATCH ENRICHMENT: Process up to 12 new reels at once
+            # Filter for reels we haven't enriched yet
             to_enrich = [sc for sc in new_links if sc not in scanned_shortcodes][:12]
+            
             if not to_enrich:
+                # Stall Protection: If no new reels for 30s, stop.
+                if time.time() - last_new_reel_time > 30:
+                    log("Loading paused or end of profile reached. Finishing scrape.")
+                    break
                 page.mouse.wheel(0, 2000)
                 page.wait_for_timeout(1000)
                 continue
-
+            
+            # Reset stall timer
+            last_new_reel_time = time.time()
             for sc in to_enrich: scanned_shortcodes.add(sc)
             
-            # High-performance parallel fetch inside browser
-            batch_results = page.evaluate("""async ({shortcodes, app_id, asbd_id, doc_id}) => {
-                const results = await Promise.all(shortcodes.map(async (shortcode) => {
-                    try {
-                        const csrf = document.cookie.split('; ').find(row => row.startsWith('csrftoken='))?.split('=')[1] || "";
-                        const res = await fetch("https://www.instagram.com/graphql/query", {
-                            method: "POST",
-                            headers: { "Content-Type": "application/x-www-form-urlencoded", "X-CSRFToken": csrf, "X-IG-App-ID": app_id, "X-ASBD-ID": asbd_id },
-                            body: new URLSearchParams({ variables: JSON.stringify({ shortcode }), doc_id: doc_id }).toString(),
-                        });
-                        const json = await res.json();
-                        const m = json?.data?.xdt_shortcode_media;
-                        if (!m) return null;
-                        const v = m.video_view_count || 0;
-                        const p = m.video_play_count || 0;
-                        return {
-                            shortcode: m.shortcode, author: m.owner?.username,
-                            likes: m.edge_media_preview_like?.count || m.edge_liked_by?.count || 0,
-                            comments: m.edge_media_to_parent_comment?.count || 0,
-                            views: v, plays: p,
-                            hook_percentage: p > 0 ? ((v / p) * 100).toFixed(2) : "0.00",
-                            date: m.taken_at_timestamp ? new Date(m.taken_at_timestamp * 1000).toISOString() : "",
-                            timestamp: m.taken_at_timestamp
-                        };
-                    } catch (e) { return null; }
-                }));
-                return results.filter(r => r !== null);
-            }""", {"shortcodes": to_enrich, "app_id": APP_ID, "asbd_id": ASBD_ID, "doc_id": DOC_ID})
+            # High-performance parallel fetch with RETRY logic
+            batch_results = None
+            for attempt in range(1, 4):
+                try:
+                    batch_results = page.evaluate("""async ({shortcodes, app_id, asbd_id, doc_id}) => {
+                        const results = await Promise.all(shortcodes.map(async (shortcode) => {
+                            try {
+                                const csrf = document.cookie.split('; ').find(row => row.startsWith('csrftoken='))?.split('=')[1] || "";
+                                const res = await fetch("https://www.instagram.com/graphql/query", {
+                                    method: "POST",
+                                    headers: { "Content-Type": "application/x-www-form-urlencoded", "X-CSRFToken": csrf, "X-IG-App-ID": app_id, "X-ASBD-ID": asbd_id },
+                                    body: new URLSearchParams({ variables: JSON.stringify({ shortcode }), doc_id: doc_id }).toString(),
+                                });
+                                const json = await res.json();
+                                const m = json?.data?.xdt_shortcode_media;
+                                if (!m) return null;
+                                const v = m.video_view_count || 0;
+                                const p = m.video_play_count || 0;
+                                return {
+                                    shortcode: m.shortcode, author: m.owner?.username,
+                                    likes: m.edge_media_preview_like?.count || m.edge_liked_by?.count || 0,
+                                    comments: m.edge_media_to_parent_comment?.count || 0,
+                                    views: v, plays: p,
+                                    hook_percentage: p > 0 ? ((v / p) * 100).toFixed(2) : "0.00",
+                                    date: m.taken_at_timestamp ? new Date(m.taken_at_timestamp * 1000).toISOString() : "",
+                                    timestamp: m.taken_at_timestamp
+                                };
+                            } catch (e) { return null; }
+                        }));
+                        return results.filter(r => r !== null);
+                    }""", {"shortcodes": to_enrich, "app_id": APP_ID, "asbd_id": ASBD_ID, "doc_id": DOC_ID})
+                    if batch_results: break # Success!
+                except Exception as e:
+                    log(f"Batch attempt {attempt} failed: {e}")
+                    page.wait_for_timeout(2000)
 
             if batch_results:
                 for reel in batch_results:
-                    if reel['timestamp'] < target_ts:
+                    if reel['shortcode'] == target_shortcode:
                         found_target = True
+                        log("Target reel reached and processed.")
                         break
                     all_reels.append(reel)
                 
-                # Match original log format (e.g. collected and enriched 12 reels (scroll 1))
                 log(f"collected and enriched {len(all_reels)} reels (scroll {scroll_idx})")
+            else:
+                log(f"Warning: Batch at scroll {scroll_idx} failed after 3 retries. Skipping...")
 
             if found_target: break
             page.mouse.wheel(0, 3000)
             page.wait_for_timeout(1000)
         
+        log(f"Scrape finished. Total reels: {len(all_reels)}")
         return all_reels, username
 
     except Exception as e:
-        log(f"Scrape Error: {e}")
+        # If we have data, we don't call it an "Error" to the user
+        if all_reels:
+            log(f"Scrape completed with {len(all_reels)} reels (Note: {e})")
+            return all_reels, username
+        
+        log(f"Scrape failed: {e}")
         return [], None
 def scrape_reel(url):
     """CLI helper to scrape a single reel."""
