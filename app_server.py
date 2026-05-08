@@ -248,12 +248,12 @@ def start_cloudflared_tunnel():
             log_to_file("[Cloudflare Error] 'cloudflared' command not found. Please install it or add it to PATH.")
             return
 
-        log_to_file("[Cloudflare] Attempting to start tunnel...")
+        log_to_file("[Cloudflare] Attempting to start PERMANENT tunnel (f637317c)...")
         try:
-            # Use 'info' loglevel to see what's happening
+            # Command for permanent named tunnel
             cmd = [
                 "cloudflared", "tunnel", "--url", "http://localhost:5030",
-                "--protocol", "http2", "--ha-connections", "1", "--loglevel", "info"
+                "run", "f637317c-9221-477c-ab6b-efadd6e8bf0a"
             ]
             process = subprocess.Popen(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, 
