@@ -224,15 +224,48 @@ def app_submit():
     return jsonify({"status": "success", "request_id": req_id})
 
 @app.route('/status', methods=['GET'])
-def app_status():
-    req_id = request.args.get('id')
+@app.route('/status/<req_id>', methods=['GET'])
+def app_status(req_id=None):
+    if not req_id: req_id = request.args.get('id')
+    
+    # Auth Check (Optional but good for security)
+    username = request.args.get('username')
+    device_id = request.args.get('device_id')
+    sig = request.args.get('sig')
+    if username and not check_auth(username, device_id, sig)[0]:
+        return jsonify({"error": "Unauthorized"}), 403
+
     with scrape_tasks_lock:
         task = scrape_tasks.get(req_id)
         if not task: return jsonify({"error": "Task not found"}), 404
         return jsonify({
             "status": task["status"],
-            "logs": task["logs"][-5:] # Send last 5 log lines
+            "logs": task["logs"][-10:] # Send more logs for better UI
         })
+
+@app.route('/stream', methods=['GET'])
+def app_stream():
+    req_id = request.args.get('id')
+    
+    def generate():
+        last_idx = 0
+        while True:
+            with scrape_tasks_lock:
+                task = scrape_tasks.get(req_id)
+                if not task: break
+                
+                # Send new logs only
+                if len(task["logs"]) > last_idx:
+                    for i in range(last_idx, len(task["logs"])):
+                        yield f"data: {task['logs'][i]}\n\n"
+                    last_idx = len(task["logs"])
+                
+                if task["status"] in ["completed", "error"]:
+                    yield f"data: [SYSTEM] Task finished with status: {task['status']}\n\n"
+                    break
+            time.sleep(1)
+
+    return Response(stream_with_context(generate()), mimetype='text/event-stream')
 
 @app.route('/results/<req_id>', methods=['GET'])
 def get_results(req_id):

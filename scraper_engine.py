@@ -45,43 +45,108 @@ def scrape_since_reel(reel_url, logger=None, cancel_event=None, auth_info=None):
         # Step 2: Identify Author
         target_data = page.evaluate("""async ({shortcode, app_id, asbd_id, doc_id}) => {
             try {
-                const res = await fetch("https://www.instagram.com/graphql/query/", {
+                const csrf = document.cookie.split('; ').find(row => row.startsWith('csrftoken='))?.split('=')[1] || "";
+                const res = await fetch("https://www.instagram.com/graphql/query", {
                     method: "POST",
                     headers: {
                         "Content-Type": "application/x-www-form-urlencoded",
-                        "X-Instagram-AJAX": "1",
-                        "X-Requested-With": "XMLHttpRequest",
-                        "X-IG-App-ID": app_id,
-                        "X-ASBD-ID": asbd_id
+                        "X-CSRFToken": csrf,
+                        "X-IG-App-ID": app_id, "X-ASBD-ID": asbd_id
                     },
-                    body: new URLSearchParams({ 
-                        variables: JSON.stringify({ shortcode }), 
-                        doc_id: doc_id
-                    }).toString(),
+                    body: new URLSearchParams({ variables: JSON.stringify({ shortcode }), doc_id: doc_id }).toString(),
                 });
                 const json = await res.json();
                 const m = json?.data?.xdt_shortcode_media;
                 if (!m) return { error: "No media data" };
-                return { username: m.owner?.username, timestamp: m.taken_at_timestamp };
+                return { 
+                    username: m.owner?.username, 
+                    timestamp: m.taken_at_timestamp,
+                    data: {
+                        shortcode: m.shortcode,
+                        author: m.owner?.username,
+                        likes: m.edge_media_preview_like?.count || m.edge_liked_by?.count || 0,
+                        comments: m.edge_media_to_parent_comment?.count || 0,
+                        views: m.video_view_count || 0,
+                        plays: m.video_play_count || 0,
+                        date: m.taken_at_timestamp ? new Date(m.taken_at_timestamp * 1000).toISOString() : ""
+                    }
+                };
             } catch (e) { return { error: e.message }; }
         }""", {"shortcode": target_shortcode, "app_id": APP_ID, "asbd_id": ASBD_ID, "doc_id": DOC_ID})
 
         if not target_data or "error" in target_data:
-            log(f"Failed to identify author: {target_data.get('error')}")
-            if "feedback_required" in str(target_data): mark_session_sleep(current_session)
+            err = target_data.get('error', 'Unknown error')
+            log(f"Failed to identify author: {err}")
+            
+            # If blocked or feedback required, trigger hot-swap
+            if any(x in str(err).lower() for x in ["feedback_required", "block", "login", "checkpoint"]):
+                mark_session_sleep(current_session)
+                
             return [], None
 
         username = target_data['username']
         target_ts = target_data['timestamp']
+        all_reels = [target_data['data']]
         
         # Navigate and Scroll
         profile_url = f"https://www.instagram.com/{username}/reels/"
         page.goto(profile_url)
-        page.wait_for_timeout(2000)
+        page.wait_for_timeout(3000)
         
-        all_reels = []
-        # (Simplified scroll logic for brevity, matches your existing 2k line file logic)
-        # ... logic to scroll and collect reels ...
+        log(f"Scrolling {username}'s profile...")
+        found_target = False
+        scanned_shortcodes = {target_shortcode}
+
+        for _ in range(15): # Max 15 scrolls
+            if is_cancelled(): break
+            
+            # Extract visible reels
+            new_links = page.evaluate("""() => {
+                const links = Array.from(document.querySelectorAll('a[href*="/reel/"], a[href*="/p/"]'));
+                return [...new Set(links.map(a => a.href.split('/').filter(Boolean).pop()))];
+            }""")
+
+            for sc in new_links:
+                if sc in scanned_shortcodes: continue
+                scanned_shortcodes.add(sc)
+                
+                # Fetch data for this reel
+                reel_info = page.evaluate("""async ({shortcode, app_id, asbd_id, doc_id}) => {
+                    try {
+                        const csrf = document.cookie.split('; ').find(row => row.startsWith('csrftoken='))?.split('=')[1] || "";
+                        const res = await fetch("https://www.instagram.com/graphql/query", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/x-www-form-urlencoded", "X-CSRFToken": csrf, "X-IG-App-ID": app_id, "X-ASBD-ID": asbd_id },
+                            body: new URLSearchParams({ variables: JSON.stringify({ shortcode }), doc_id: doc_id }).toString(),
+                        });
+                        const json = await res.json();
+                        const m = json?.data?.xdt_shortcode_media;
+                        if (!m) return null;
+                        const views = m.video_view_count || 0;
+                        const plays = m.video_play_count || 0;
+                        return {
+                            shortcode: m.shortcode,
+                            author: m.owner?.username,
+                            likes: m.edge_media_preview_like?.count || m.edge_liked_by?.count || 0,
+                            comments: m.edge_media_to_parent_comment?.count || 0,
+                            views: views, plays: plays,
+                            hook_percentage: plays > 0 ? ((views / plays) * 100).toFixed(2) : "0.00",
+                            date: m.taken_at_timestamp ? new Date(m.taken_at_timestamp * 1000).toISOString() : "",
+                            timestamp: m.taken_at_timestamp
+                        };
+                    } catch (e) { return null; }
+                }""", {"shortcode": sc, "app_id": APP_ID, "asbd_id": ASBD_ID, "doc_id": DOC_ID})
+
+                if reel_info:
+                    if reel_info['timestamp'] < target_ts:
+                        found_target = True
+                        break
+                    all_reels.append(reel_info)
+                    log(f"Collected: {sc} ({len(all_reels)} total)")
+
+            if found_target: break
+            page.mouse.wheel(0, 2000)
+            page.wait_for_timeout(1500)
         
         return all_reels, username
 

@@ -17,12 +17,16 @@ def save_users(users_list):
         json.dump(users_list, f, indent=4)
 
 def update_user_stats(username, links=0, files=0, rows=0):
+    """Thread-safe update of user statistics and credits."""
     users = load_users()
     for u in users:
         if u["username"] == username:
             u["requested_links"] = u.get("requested_links", 0) + links
             u["files_generated"] = u.get("files_generated", 0) + files
             u["total_rows_scraped"] = u.get("total_rows_scraped", 0) + rows
+            # Deduct credits (Match user turn 23 field name)
+            if "credits" in u:
+                u["credits"] = max(0, u["credits"] - links)
             break
     save_users(users)
 

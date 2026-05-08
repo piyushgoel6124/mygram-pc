@@ -71,54 +71,66 @@ def get_all_sessions():
     return [os.path.join(SESSIONS_DIR, f) for f in os.listdir(SESSIONS_DIR) if f.endswith('.json')]
 
 def mark_session_sleep(session_path):
-    log_to_file(f"[Session] Rate limited: {os.path.basename(session_path)}. Sleeping for 6 hours.")
+    """Marks a session as blocked, kills its browser, and replaces it."""
+    log_to_file(f"[Session] BLOCKED: {os.path.basename(session_path)}. Sleeping for 6 hours.")
     _session_stats[session_path] = {
         "sleep_until": time.time() + (6 * 3600),
         "last_used": time.time()
     }
     save_session_status()
+    
+    # KILL the blocked instance immediately
     close_pooled_browser(session_path)
+    
+    # REFILL the pool with a new session
+    threading.Thread(target=initialize_browser_pool, daemon=True).start()
 
 def initialize_browser_pool():
+    """Maintains exactly 5 persistent browser instances in RAM."""
     global _pool_playwright, _browser_pool, _pool_initialized
     
-    if _pool_playwright is None:
-        from playwright.sync_api import sync_playwright
-        _pool_playwright = sync_playwright().start()
+    with _pool_lock:
+        if _pool_playwright is None:
+            from playwright.sync_api import sync_playwright
+            _pool_playwright = sync_playwright().start()
 
-    all_sessions = get_all_sessions()
-    now = time.time()
-    load_session_status()
-    
-    # 1. Clean up pool
-    to_close = [s for s in _browser_pool if now < _session_stats.get(s, {}).get("sleep_until", 0)]
-    for s in to_close:
-        log_to_file(f"[Pool] Session {os.path.basename(s)} is now sleeping. Removing.")
-        close_pooled_browser(s)
+        all_sessions = get_all_sessions()
+        now = time.time()
+        load_session_status()
+        
+        # 1. How many slots do we need to fill?
+        current_count = len(_browser_pool)
+        needed = 5 - current_count
+        
+        if needed <= 0:
+            return
 
-    # 2. Sequential launch
-    ready = [s for s in all_sessions if now >= _session_stats.get(s, {}).get("sleep_until", 0)]
-    target = ready[:5]
-    
-    for s in target:
-        if s not in _browser_pool and len(_browser_pool) < 5:
+        # 2. Find sessions that aren't already in the pool and aren't sleeping
+        ready = [s for s in all_sessions if s not in _browser_pool and now >= _session_stats.get(s, {}).get("sleep_until", 0)]
+        target = ready[:needed]
+        
+        for s in target:
             try:
-                log_to_file(f"[Pool] Launching browser for {os.path.basename(s)}...")
+                log_to_file(f"[Pool] Persistent Launch: {os.path.basename(s)}...")
                 browser = _pool_playwright.chromium.launch(headless=True)
                 context = browser.new_context(storage_state=s)
                 page = context.new_page()
+                
+                # Performance: Block media
                 page.route("**/*", lambda route: route.abort() if route.request.resource_type in ["image", "media", "font"] else route.continue_())
-                page.goto("https://www.instagram.com/robots.txt", timeout=60000)
+                
+                # Warm up
+                page.goto("https://www.instagram.com/robots.txt", timeout=30000)
                 
                 _browser_pool[s] = {"browser": browser, "context": context, "page": page, "in_use": False}
-                log_to_file(f"[Pool] SUCCESS: Launched {os.path.basename(s)}")
-                time.sleep(3)
+                log_to_file(f"[Pool] SUCCESS: {os.path.basename(s)} is now WARM in RAM.")
+                time.sleep(2) # Sequential launch delay
             except Exception as e:
-                log_to_file(f"[Pool] Error warming up {s}: {e}")
+                log_to_file(f"[Pool] Error launching {s}: {e}")
 
     if not _pool_initialized and _browser_pool:
         log_to_file("==================================================")
-        log_to_file("Browser Pool Ready. Waiting for submissions...")
+        log_to_file(f"Browser Pool Ready ({len(_browser_pool)}/5). Waiting for tasks...")
         log_to_file("==================================================")
         _pool_initialized = True
 
