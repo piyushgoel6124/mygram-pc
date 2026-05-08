@@ -241,12 +241,19 @@ def start_cloudflared_tunnel():
     """Starts the Cloudflare tunnel in a background thread."""
     def run_tunnel():
         import subprocess
+        import shutil
+        
+        # Check if cloudflared exists
+        if not shutil.which("cloudflared"):
+            log_to_file("[Cloudflare Error] 'cloudflared' command not found. Please install it or add it to PATH.")
+            return
+
         log_to_file("[Cloudflare] Attempting to start tunnel...")
         try:
-            # Optimized for single-core: http2, 1 connection, warn logs only
+            # Use 'info' loglevel to see what's happening
             cmd = [
                 "cloudflared", "tunnel", "--url", "http://localhost:5030",
-                "--protocol", "http2", "--ha-connections", "1", "--loglevel", "warn"
+                "--protocol", "http2", "--ha-connections", "1", "--loglevel", "info"
             ]
             process = subprocess.Popen(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, 
@@ -254,7 +261,8 @@ def start_cloudflared_tunnel():
             )
             for line in iter(process.stdout.readline, ''):
                 if line.strip():
-                    log_to_file(f"[Cloudflare] {line.strip()}", to_console=False)
+                    # Print to console as well for now to debug
+                    log_to_file(f"[Cloudflare] {line.strip()}", to_console=True)
         except Exception as e:
             log_to_file(f"[Cloudflare Error] Could not start tunnel: {e}")
             log_to_file("[System] Tunnel failed, but server is running locally at http://localhost:5030")
