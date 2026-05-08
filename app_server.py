@@ -182,9 +182,14 @@ def app_login():
     
     return jsonify({"error": "Invalid username or password"}), 401
 
-@app.route('/submit', methods=['POST'])
+@app.route('/submit', methods=['GET', 'POST'])
 def app_submit():
-    data = request.json
+    # Support both JSON body (POST) and URL parameters (GET)
+    if request.method == 'POST':
+        data = request.json or {}
+    else:
+        data = request.args
+
     username = data.get('username')
     device_id = data.get('device_id')
     sig = data.get('sig')
