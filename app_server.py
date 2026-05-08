@@ -96,23 +96,56 @@ def run_background_scrape(session_id):
         try:
             results, username = scrape_since_reel(reel_url, logger=lambda m: task["logs"].append(m), cancel_event=cancel_evt)
             
-            if results:
-                filepath = os.path.join(OUTPUTS_DIR, f"{session_id}.csv")
-                with open(filepath, "w", newline="", encoding="utf-8") as f:
-                    keys = results[0].keys()
-                    dict_writer = csv.DictWriter(f, fieldnames=keys)
-                    dict_writer.writeheader()
-                    dict_writer.writerows(results)
-                
+            if results and len(results) > 0:
+                # SUCCESS: We have data!
                 with scrape_tasks_lock:
                     task["status"] = "completed"
-                    task["results_path"] = filepath
+                    task["logs"].append(f"[SYSTEM] Scrape successful! Collected {len(results)} reels.")
+
+                try:
+                    # Generate a pretty display name like the old code
+                    timestamp = time.strftime("%Y%m%d_%H%M%S")
+                    display_name = f"{username}_{timestamp}.csv"
+                    filepath = os.path.join(OUTPUTS_DIR, f"{session_id}.csv")
+                    
+                    with open(filepath, "w", newline="", encoding="utf-8") as f:
+                        keys = results[0].keys()
+                        dict_writer = csv.DictWriter(f, fieldnames=keys)
+                        dict_writer.writeheader()
+                        dict_writer.writerows(results)
+                    
+                    with scrape_tasks_lock:
+                        task["results_path"] = filepath
+                        task["display_name"] = display_name
+                    
+                    # LOG: Match old behavior (Lines 1705-1718)
+                    msg = f"[SYSTEM] CSV Saved: {display_name} ({len(results)} reels)"
+                    task["logs"].append(msg)
+                    log_to_file(msg)
+
+                except Exception as fe:
+                    log_to_file(f"File Saving Error: {fe}")
+                    task["logs"].append(f"Warning: Data collected but file save failed: {fe}")
                 
-                update_user_stats(task.get("username"), links=1, rows=len(results))
+                # Update Stats & Deduct Credits
+                req_user = task.get("username")
+                if req_user:
+                    from auth_utils import update_user_stats
+                    update_user_stats(req_user, links=1, files=1, rows=len(results))
             else:
-                with scrape_tasks_lock: task["status"] = "error"
+                # No results found at all
+                with scrape_tasks_lock:
+                    task["status"] = "error"
+                    task["logs"].append("[SYSTEM] No reels were found for this URL.")
+                
         except Exception as e:
-            with scrape_tasks_lock: task["status"] = "error"
+            log_to_file(f"Scrape Exception: {e}")
+            # If the scraper itself crashed but we might have partial data (handled in engine)
+            # we check if we still got results. If not, mark error.
+            with scrape_tasks_lock:
+                if task["status"] != "completed":
+                    task["status"] = "error"
+                    task["logs"].append(f"ERROR: {e}")
 
 @app.route('/ping')
 def ping():
