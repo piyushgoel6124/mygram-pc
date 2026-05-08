@@ -23,7 +23,7 @@ queue_lock = threading.Lock()
 scrape_lock = threading.Lock()
 
 def health_monitor_loop():
-    """Periodically checks and logs the health of all components."""
+    """Periodically checks and logs the health of all components ."""
     log_to_file("[Health Monitor] Started.")
     while True:
         try:
