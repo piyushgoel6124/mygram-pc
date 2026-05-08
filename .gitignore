@@ -10,9 +10,12 @@ sessions/
 outputs/
 logggs.txt
 *.csv
+users.json
+session_status.json
 *.pem
 .cloudflared/
 
 # IDE
 .vscode/
 .idea/
+sessions.json
