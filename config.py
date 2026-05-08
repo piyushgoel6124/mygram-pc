@@ -14,7 +14,7 @@ ADMIN_PASS = "lollipop"
 SESSIONS_DIR = "sessions"
 OUTPUTS_DIR = "outputs"
 LOG_FILE = "logggs.txt"
-PUBLIC_URL = "https://mygram.tehlive.in"
+PUBLIC_URL = "https://mygram.techlive.in"
 
 # Ensure directories exist
 os.makedirs(SESSIONS_DIR, exist_ok=True)
