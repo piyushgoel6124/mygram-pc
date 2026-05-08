@@ -3,11 +3,49 @@ import time
 import json
 import threading
 from config import SESSIONS_DIR
+from playwright.sync_api import sync_playwright
 from logger_utils import log_to_file
 
 # Global session states
 _session_stats = {} 
 _session_stats_file = "session_status.json"
+
+def login_and_save_session():
+    """
+    Launches a headed browser to let the user log in manually,
+    then saves the session state to a file.
+    """
+    with sync_playwright() as p:
+        print("Launching headed Chromium browser...")
+        browser = p.chromium.launch(headless=False)
+        
+        context = browser.new_context(
+            viewport={'width': 1280, 'height': 720},
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
+        )
+        
+        page = context.new_page()
+        print("Navigating to Instagram login page...")
+        page.goto("https://www.instagram.com/accounts/login/")
+        
+        print("\n" + "="*50)
+        print("PLEASE LOG IN MANUALLY IN THE BROWSER WINDOW.")
+        print("Once you are fully logged in and see your feed,")
+        print("come back here and press ENTER to save the session.")
+        print("="*50 + "\n")
+        
+        input("Press Enter here after you have logged in...")
+        
+        # Save storage state to a named file in sessions/
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        name = input("Enter a name for this session (e.g. account1): ").strip() or f"session_{timestamp}"
+        if not name.endswith(".json"): name += ".json"
+        
+        session_path = os.path.join(SESSIONS_DIR, name)
+        context.storage_state(path=session_path)
+        
+        print(f"\n[SUCCESS] Session saved to: {session_path}")
+        browser.close()
 
 # Browser Pool globals
 _pool_playwright = None

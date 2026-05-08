@@ -8,7 +8,7 @@ ASBD_ID = "129477"
 # Security
 API_SECRET = "mygram_secure_key_2026"
 ADMIN_USER = "admin"
-ADMIN_PASS = "admin123"
+ADMIN_PASS = "lollipop"
 
 # Directories
 SESSIONS_DIR = "sessions"

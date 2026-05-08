@@ -15,8 +15,7 @@ if __name__ == "__main__":
         print_menu()
         choice = input("\nSelect an option: ").strip()
         if choice == '1':
-            # login_and_save_session logic
-            pass
+            login_and_save_session()
         elif choice == '2':
             start_server()
         else:

@@ -115,15 +115,119 @@ def run_background_scrape(session_id):
 def ping():
     return "pong", 200
 
+@app.route('/api/admin/login', methods=['POST'])
+def admin_login():
+    data = request.json
+    if data.get('username') == ADMIN_USER and data.get('password') == ADMIN_PASS:
+        return jsonify({"token": "mock-session-token-2026"})
+    return jsonify({"error": "Invalid Credentials"}), 401
+
+@app.route('/api/admin/users', methods=['GET', 'POST', 'DELETE'])
+def admin_users():
+    # Simple token check
+    if request.headers.get('Authorization') != "mock-session-token-2026":
+        return jsonify({"error": "Unauthorized"}), 403
+
+    if request.method == 'GET':
+        return jsonify(load_users())
+    
+    elif request.method == 'POST':
+        new_user = request.json
+        users = load_users()
+        # Update if exists, else append
+        found = False
+        for i, u in enumerate(users):
+            if u["username"] == new_user["username"]:
+                users[i] = new_user
+                found = True; break
+        if not found: users.append(new_user)
+        save_users(users)
+        return jsonify({"status": "success"})
+    
+    elif request.method == 'DELETE':
+        username = request.args.get('username')
+        users = [u for u in load_users() if u["username"] != username]
+        save_users(users)
+        return jsonify({"status": "success"})
+
 @app.route('/login', methods=['POST'])
-def api_login():
-    # ... logic for API login ...
-    return jsonify({"status": "success"})
+def app_login():
+    data = request.json
+    username = data.get('username')
+    password = data.get('password')
+    device_id = data.get('device_id')
+    sig = data.get('sig')
+
+    if not username or not password or not device_id:
+        return jsonify({"error": "Missing credentials"}), 400
+    
+    # Check Auth Logic
+    success, msg = check_auth(username, device_id, sig)
+    if not success:
+        return jsonify({"error": msg}), 403
+
+    # (Simplified login check)
+    users = load_users()
+    for u in users:
+        if u["username"] == username and u["password"] == password:
+            return jsonify({"status": "success", "message": "Logged in"})
+    
+    return jsonify({"error": "Invalid username or password"}), 401
 
 @app.route('/submit', methods=['POST'])
-def api_submit():
-    # ... logic for API submission ...
-    return jsonify({"status": "queued"})
+def app_submit():
+    data = request.json
+    username = data.get('username')
+    device_id = data.get('device_id')
+    sig = data.get('sig')
+    reel_url = data.get('url')
+
+    if not reel_url:
+        return jsonify({"error": "Missing Reel URL"}), 400
+
+    # Auth Check
+    success, msg = check_auth(username, device_id, sig)
+    if not success:
+        return jsonify({"error": msg}), 403
+
+    # Queue the task
+    req_id = str(uuid.uuid4())
+    cancel_evt = threading.Event()
+    
+    with scrape_tasks_lock:
+        scrape_tasks[req_id] = {
+            "id": req_id,
+            "username": username,
+            "url": reel_url,
+            "status": "queued",
+            "timestamp": time.time(),
+            "logs": [],
+            "event": cancel_evt
+        }
+    
+    with queue_lock:
+        request_queue.append(req_id)
+    
+    return jsonify({"status": "success", "request_id": req_id})
+
+@app.route('/status', methods=['GET'])
+def app_status():
+    req_id = request.args.get('id')
+    with scrape_tasks_lock:
+        task = scrape_tasks.get(req_id)
+        if not task: return jsonify({"error": "Task not found"}), 404
+        return jsonify({
+            "status": task["status"],
+            "logs": task["logs"][-5:] # Send last 5 log lines
+        })
+
+@app.route('/results/<req_id>', methods=['GET'])
+def get_results(req_id):
+    with scrape_tasks_lock:
+        task = scrape_tasks.get(req_id)
+        if not task or not task.get("results_path"):
+            return jsonify({"error": "Results not ready"}), 404
+        return send_from_directory(OUTPUTS_DIR, f"{req_id}.csv", as_attachment=True)
 
 def start_cloudflared_tunnel():
     """Starts the Cloudflare tunnel in a background thread."""
