@@ -19,3 +19,4 @@ session_status.json
 .vscode/
 .idea/
 sessions.json
+*.log
