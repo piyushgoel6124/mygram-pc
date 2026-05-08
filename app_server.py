@@ -248,11 +248,12 @@ def start_cloudflared_tunnel():
             log_to_file("[Cloudflare Error] 'cloudflared' command not found. Please install it or add it to PATH.")
             return
 
-        log_to_file("[Cloudflare] Attempting to start PERMANENT tunnel (f637317c)...")
+        log_to_file("[Cloudflare] Attempting to start PERMANENT tunnel (f637317c) via HTTP2...")
         try:
-            # Command for permanent named tunnel
+            # Command for permanent named tunnel with HTTP2 protocol (more stable on VPS)
             cmd = [
-                "cloudflared", "tunnel", "--url", "http://localhost:5030",
+                "cloudflared", "tunnel", "--protocol", "http2", "--ha-connections", "1",
+                "--url", "http://localhost:5030",
                 "run", "f637317c-9221-477c-ab6b-efadd6e8bf0a"
             ]
             process = subprocess.Popen(
@@ -275,18 +276,51 @@ def admin_dashboard():
     return render_template('admin.html')
 
 def start_server():
-    log_to_file("[System] Starting fail-safe server...")
+    """Entry point that coordinates the entire system startup sequence."""
     
-    # --- Route Debugger ---
-    print("\n--- Registered Routes ---")
-    for rule in app.url_map.iter_rules():
-        print(f"Route: {rule.rule} | Methods: {rule.methods}")
-    print("------------------------\n")
+    def coordinated_startup():
+        log_to_file("[System] --- Phase 1: Starting Local Flask Server ---")
+        # Flask will be started at the end of start_server() because it is blocking.
+        # We wait here for it to be alive.
+        import requests
+        for _ in range(10):
+            try:
+                if requests.get("http://localhost:5030/ping", timeout=2).status_code == 200:
+                    break
+            except: pass
+            time.sleep(1)
+        
+        log_to_file("[System] --- Phase 2: Launching Cloudflare Tunnel ---")
+        start_cloudflared_tunnel()
 
-    start_cloudflared_tunnel()
+        log_to_file("[System] --- Phase 3: Waiting for Public URL to go Online ---")
+        from config import PUBLIC_URL
+        online = False
+        for i in range(30):
+            try:
+                print(f"\r[Tunnel] Checking public link... ({i+1}/30)", end="")
+                if requests.get(f"{PUBLIC_URL}/ping", timeout=3).status_code == 200:
+                    online = True
+                    break
+            except: pass
+            time.sleep(1)
+        
+        print("") # New line
+        if online:
+            log_to_file(f"[System] SUCCESS: Tunnel is ONLINE at {PUBLIC_URL}")
+        else:
+            log_to_file("[System] WARNING: Tunnel is taking too long. Starting browsers anyway...")
+
+        log_to_file("[System] --- Phase 4: Initializing Browser Pool & Worker ---")
+        threading.Thread(target=worker_loop, name="ScraperWorker", daemon=True).start()
+
+    # 1. Start Health Monitor
     threading.Thread(target=health_monitor_loop, name="HealthMonitor", daemon=True).start()
-    threading.Thread(target=worker_loop, name="ScraperWorker", daemon=True).start()
-    
+
+    # 2. Start the Coordination Thread
+    threading.Thread(target=coordinated_startup, daemon=True).start()
+
+    # 3. Start Flask (Blocking)
     print("\n" + "="*50)
     print("SERVER STARTING LOCALLY AT: http://localhost:5030")
     print("ADMIN PANEL: http://localhost:5030/admin")
