@@ -89,15 +89,45 @@ def run_background_scrape(session_id):
         task = scrape_tasks.get(session_id)
         if not task: return
         reel_url = task["url"]
+        task_type = task.get("type", "SINGLE")
         cancel_evt = task["event"]
         task["status"] = "running"
 
     with scrape_lock:
         try:
-            results, username = scrape_since_reel(reel_url, logger=lambda m: task["logs"].append(m), cancel_event=cancel_evt)
+            all_results = []
+            final_username = None
+            
+            if task_type == "BULK":
+                # Handle Bulk Upload (Match old code lines 1650-1695)
+                upload_path = os.path.join(OUTPUTS_DIR, f"upload_{session_id}.csv")
+                if not os.path.exists(upload_path):
+                    raise Exception("Uploaded file not found")
+                
+                with open(upload_path, "r", encoding="utf-8") as f:
+                    # Support multiple formats (one per line, or CSV with 'url' column)
+                    content = f.read().splitlines()
+                    links = [line.strip() for line in content if "instagram.com" in line]
+                
+                task["logs"].append(f"[BULK] Found {len(links)} links. Starting...")
+                
+                for i, link in enumerate(links):
+                    if cancel_evt.is_set(): break
+                    task["logs"].append(f"[BULK] Processing {i+1}/{len(links)}: {link}")
+                    res, uname = scrape_since_reel(link, logger=lambda m: task["logs"].append(m), cancel_event=cancel_evt)
+                    if res:
+                        all_results.extend(res)
+                        final_username = uname
+                    time.sleep(2) # Prevent rate limits between bulk items
+                
+                results = all_results
+                username = final_username or "bulk_user"
+            else:
+                # Normal Single Scrape
+                results, username = scrape_since_reel(reel_url, logger=lambda m: task["logs"].append(m), cancel_event=cancel_evt)
             
             if results and len(results) > 0:
-                # SUCCESS: We have data!
+                # SUCCESS
                 with scrape_tasks_lock:
                     task["status"] = "completed"
                     task["logs"].append(f"[SYSTEM] Scrape successful! Collected {len(results)} reels.")
@@ -256,6 +286,43 @@ def app_submit():
     
     return jsonify({"status": "success", "request_id": req_id})
 
+@app.route('/upload', methods=['POST'])
+def app_upload():
+    username = request.form.get('username')
+    device_id = request.form.get('device_id')
+    sig = request.form.get('sig')
+    
+    if not check_auth(username, device_id, sig)[0]:
+        return jsonify({"error": "Unauthorized"}), 403
+        
+    if 'file' not in request.files:
+        return jsonify({"error": "No file uploaded"}), 400
+        
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({"error": "No file selected"}), 400
+
+    req_id = str(uuid.uuid4())
+    filepath = os.path.join(OUTPUTS_DIR, f"upload_{req_id}.csv")
+    file.save(filepath)
+    
+    # Create task (Matching old logic)
+    cancel_event = threading.Event()
+    with scrape_tasks_lock:
+        scrape_tasks[req_id] = {
+            "url": "Bulk Upload",
+            "type": "BULK",
+            "username": username,
+            "status": "queued",
+            "event": cancel_event,
+            "logs": [f"[SYSTEM] CSV Uploaded: {file.filename}"]
+        }
+    
+    with queue_lock:
+        request_queue.append(req_id)
+        
+    return jsonify({"status": "success", "request_id": req_id})
+
 @app.route('/status', methods=['GET'])
 @app.route('/status/<req_id>', methods=['GET'])
 def app_status(req_id=None):
@@ -274,11 +341,15 @@ def app_status(req_id=None):
         
         response = {
             "status": task["status"],
-            "logs": task["logs"][-10:]
+            "logs": task["logs"]
         }
         
         if task["status"] == "completed":
-            response["download_url"] = f"{request.host_url.rstrip('/')}/download/{req_id}"
+            from config import PUBLIC_URL
+            # Use the secure PUBLIC_URL from config (ensures https works for Android)
+            base_url = PUBLIC_URL.rstrip('/') if PUBLIC_URL else f"http://{request.host}"
+            response["download_url"] = f"{base_url}/download/{req_id}"
+            response["filename"] = task.get("display_name", f"{req_id}.csv")
             
         return jsonify(response)
 
@@ -308,10 +379,13 @@ def app_stream():
                         yield f"data: {task['logs'][i]}\n\n"
                     last_idx = len(task["logs"])
                 
-                # 3. Break if finished
+                # Update UI status in app
+                yield f"event: status\ndata: {task['status']}\n\n"
+                
+                # 3. Break if finished (Match app logic line 291)
                 if task["status"] in ["completed", "error", "cancelled"]:
-                    # Final signal
-                    yield f"data: [SYSTEM] Task finished with status: {task['status']}\n\n"
+                    if task["status"] == "completed":
+                        yield f"event: complete\ndata: {req_id}\n\n"
                     break
             
             time.sleep(1)
@@ -327,7 +401,16 @@ def get_results(req_id):
         task = scrape_tasks.get(req_id)
         if not task or not task.get("results_path"):
             return jsonify({"error": "Results not ready"}), 404
-        return send_from_directory(OUTPUTS_DIR, f"{req_id}.csv", as_attachment=True)
+        
+        # Get the pretty name we generated earlier
+        display_name = task.get("display_name", f"{req_id}.csv")
+        
+        return send_from_directory(
+            OUTPUTS_DIR, 
+            f"{req_id}.csv", 
+            as_attachment=True, 
+            download_name=display_name
+        )
 
 @app.route('/cancel/<req_id>', methods=['GET', 'POST'])
 def app_cancel(req_id):

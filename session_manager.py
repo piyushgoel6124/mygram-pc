@@ -98,9 +98,9 @@ def initialize_browser_pool():
         now = time.time()
         load_session_status()
         
-        # 1. How many slots do we need to fill?
+        # 1. How many slots do we need to fill? (Reduced to 3 for stability)
         current_count = len(_browser_pool)
-        needed = 5 - current_count
+        needed = 4 - current_count
         
         if needed <= 0:
             return
@@ -145,10 +145,18 @@ def close_pooled_browser(path):
             del _browser_pool[path]
 
 def get_pooled_browser(path):
+    """Returns a page from the pool, checking if the browser is still alive."""
     with _pool_lock:
         if path in _browser_pool and not _browser_pool[path]["in_use"]:
-            _browser_pool[path]["in_use"] = True
-            return _browser_pool[path]["page"]
+            # Basic health check
+            try:
+                # Check if the page is still responsive
+                _browser_pool[path]["page"].url
+                _browser_pool[path]["in_use"] = True
+                return _browser_pool[path]["page"]
+            except Exception:
+                log_to_file(f"[Pool] Detected CRASHED browser for {os.path.basename(path)}. Cleaning up.")
+                close_pooled_browser(path)
     return None
 
 def release_pooled_browser(path):
