@@ -97,7 +97,7 @@ def scrape_since_reel(reel_url, logger=None, cancel_event=None, auth_info=None):
         found_target = False
         scanned_shortcodes = {target_shortcode}
 
-        for _ in range(15): # Max 15 scrolls
+        for scroll_idx in range(1, 46): # Max 15 scrolls
             if is_cancelled(): break
             
             # Extract visible reels
@@ -106,7 +106,7 @@ def scrape_since_reel(reel_url, logger=None, cancel_event=None, auth_info=None):
                 return [...new Set(links.map(a => a.href.split('/').filter(Boolean).pop()))];
             }""")
 
-            # BATCH ENRICHMENT: Process up to 12 new reels at once (High Performance)
+            # BATCH ENRICHMENT: Process up to 12 new reels at once
             to_enrich = [sc for sc in new_links if sc not in scanned_shortcodes][:12]
             if not to_enrich:
                 page.mouse.wheel(0, 2000)
@@ -115,9 +115,7 @@ def scrape_since_reel(reel_url, logger=None, cancel_event=None, auth_info=None):
 
             for sc in to_enrich: scanned_shortcodes.add(sc)
             
-            log(f"Enriching batch of {len(to_enrich)} reels...")
-            
-            # This JS function fetches multiple reels in parallel inside the browser
+            # High-performance parallel fetch inside browser
             batch_results = page.evaluate("""async ({shortcodes, app_id, asbd_id, doc_id}) => {
                 const results = await Promise.all(shortcodes.map(async (shortcode) => {
                     try {
@@ -153,7 +151,8 @@ def scrape_since_reel(reel_url, logger=None, cancel_event=None, auth_info=None):
                         break
                     all_reels.append(reel)
                 
-                log(f"Progress: {len(all_reels)} reels collected.")
+                # Match original log format (e.g. collected and enriched 12 reels (scroll 1))
+                log(f"collected and enriched {len(all_reels)} reels (scroll {scroll_idx})")
 
             if found_target: break
             page.mouse.wheel(0, 3000)
