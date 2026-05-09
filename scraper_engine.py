@@ -42,6 +42,10 @@ def scrape_since_reel(reel_url, logger=None, cancel_event=None, auth_info=None):
         # Block heavy assets to save bandwidth/RAM
         page.route("**/*", lambda route: route.abort() if route.request.resource_type in ["image", "media", "font"] else route.continue_())
 
+        # Step 1: Navigate to Instagram first so we have access to cookies/document
+        log("Warming up session context...")
+        page.goto("https://www.instagram.com/", wait_until="domcontentloaded", timeout=60000)
+
         match = re.search(r'/(?:reels?|p)/([^/?#&]+)', reel_url)
         if not match: return [], None
         target_shortcode = match.group(1)
