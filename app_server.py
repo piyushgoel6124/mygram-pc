@@ -26,6 +26,7 @@ def health_monitor_loop():
     """Periodically checks health by having browsers ping the tunnel (keeps them warm)."""
     from session_manager import _browser_pool, _pool_lock
     from config import PUBLIC_URL
+    import requests
     ping_url = f"{PUBLIC_URL.rstrip('/')}/ping" if PUBLIC_URL else "http://localhost:5030/ping"
     
     log_to_file("[Health Monitor] Started.")
@@ -37,26 +38,40 @@ def health_monitor_loop():
             flask_ok = False
             tunnel_ok = False
             
-            # 1. Use Browsers to Ping Tunnel (Keeps them awake + Checks health)
+            # 1. Use Browsers to Ping Tunnel (Priority)
             with _pool_lock:
                 for path, data in _browser_pool.items():
                     if not data["in_use"]:
                         try:
-                            # Log the ping to show browser activity
-                            data["page"].goto(ping_url, timeout=20000)
+                            # Use 'commit' to finish as soon as headers are received (fastest)
+                            data["page"].goto(ping_url, timeout=15000, wait_until="commit")
                             flask_ok = True
                             tunnel_ok = True
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            # Log the specific browser error for debugging
+                            log_to_file(f"[Heartbeat] {os.path.basename(path)} failed ping: {str(e)[:50]}...", to_console=False)
+            
+            # 2. Fallback check (to prevent false ERR logs if tunnel is fine but browsers are slow)
+            if not flask_ok:
+                try:
+                    if requests.get("http://localhost:5030/ping", timeout=2).status_code == 200:
+                        flask_ok = True
+                except: pass
+            
+            if not tunnel_ok and PUBLIC_URL:
+                try:
+                    if requests.get(f"{PUBLIC_URL}/ping", timeout=3).status_code == 200:
+                        tunnel_ok = True
+                except: pass
             
             status.append(f"FLASK: {'OK' if flask_ok else 'ERR'}")
             status.append(f"TUNNEL: {'OK' if tunnel_ok else 'ERR'}")
 
-            # 2. Check Worker Thread
+            # 3. Check Worker Thread
             worker_alive = any(t.name == "ScraperWorker" and t.is_alive() for t in threading.enumerate())
             status.append(f"WORKER: {'OK' if worker_alive else 'STOPPED'}")
 
-            # 3. Resources
+            # 4. Resources
             mem = psutil.virtual_memory().percent
             status.append(f"RAM: {mem}%")
 
