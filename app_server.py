@@ -333,10 +333,11 @@ def app_status(req_id=None):
     with scrape_tasks_lock:
         task = scrape_tasks.get(req_id)
         if not task: 
-            # Return 200 OK with error status to stop app from retrying 404s
+            # Nuclear Option: Return 'completed' to force the app to remove the task 
+            # from its active list and stop the background polling loop.
             return jsonify({
-                "status": "error", 
-                "logs": ["[SYSTEM] Task not found. The server may have restarted."]
+                "status": "completed", 
+                "logs": ["[SYSTEM] Task lost due to server restart. Stopping app requests."]
             }), 200
         
         response = {
