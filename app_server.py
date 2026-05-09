@@ -71,10 +71,18 @@ def worker_loop():
     try: initialize_browser_pool()
     except: pass
     
+    last_heartbeat = 0
     while True:
         try: initialize_browser_pool() # Idle refresh
         except: pass
 
+        # Heartbeat (Every 3 minutes)
+        if time.time() - last_heartbeat > 180:
+            from session_manager import ping_tunnel_from_pool
+            try: ping_tunnel_from_pool()
+            except: pass
+            last_heartbeat = time.time()
+        
         target_id = None
         with queue_lock:
             if request_queue: target_id = request_queue.pop(0)
@@ -496,8 +504,6 @@ def start_server():
             log_to_file("[System] WARNING: Tunnel is taking too long. Starting browsers anyway...")
 
         log_to_file("[System] --- Phase 4: Initializing Browser Pool & Worker ---")
-        from session_manager import start_pool_heartbeat
-        threading.Thread(target=start_pool_heartbeat, name="PoolHeartbeat", daemon=True).start()
         threading.Thread(target=worker_loop, name="ScraperWorker", daemon=True).start()
 
     # 1. Start Health Monitor
