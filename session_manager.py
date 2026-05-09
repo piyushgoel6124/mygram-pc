@@ -162,7 +162,7 @@ def get_pooled_browser(path):
     return None
 
 def ping_tunnel_from_pool():
-    """Pings the tunnel from idle browsers. Must be called from the thread that owns the pool."""
+    """Pings the tunnel while staying on the Instagram domain to avoid CORS errors."""
     from config import PUBLIC_URL
     ping_url = f"{PUBLIC_URL.rstrip('/')}/ping" if PUBLIC_URL else "http://localhost:5030/ping"
     
@@ -170,8 +170,12 @@ def ping_tunnel_from_pool():
         for path, data in _browser_pool.items():
             if not data["in_use"]:
                 try:
-                    log_to_file(f"[Heartbeat] {os.path.basename(path)} pinging tunnel...")
-                    data["page"].goto(ping_url, timeout=30000)
+                    # 1. Stay on Instagram ROOT page (more natural)
+                    log_to_file(f"[Heartbeat] {os.path.basename(path)} refreshing context...")
+                    data["page"].goto("https://www.instagram.com/", timeout=30000)
+                    
+                    # 2. Background ping to tunnel
+                    data["page"].evaluate(f"fetch('{ping_url}').catch(() => {{}})")
                 except Exception as e:
                     log_to_file(f"[Heartbeat] Error for {os.path.basename(path)}: {e}")
 
