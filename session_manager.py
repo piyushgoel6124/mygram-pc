@@ -50,7 +50,7 @@ def login_and_save_session():
 # Browser Pool globals
 _pool_playwright = None
 _browser_pool = {} 
-_pool_lock = threading.Lock()
+_pool_lock = threading.RLock()
 _pool_initialized = False
 
 def load_session_status():
@@ -102,9 +102,17 @@ def get_pooled_browser(path):
     return None
 
 def initialize_browser_pool(priority_session=None):
-    """Maintains exactly ONE persistent browser instance for maximum RAM efficiency."""
+    """Maintains exactly ONE persistent browser instance. Cleans up zombies to save RAM."""
     global _pool_playwright, _browser_pool, _pool_initialized
     
+    # 0. Zombie Cleanup: Kill orphaned chromium processes to free RAM on 1-core VPS
+    try:
+        if not _browser_pool:
+            import subprocess
+            subprocess.run(["taskkill", "/F", "/IM", "chrome.exe", "/T"], capture_output=True)
+            subprocess.run(["taskkill", "/F", "/IM", "chromium.exe", "/T"], capture_output=True)
+    except: pass
+
     with _pool_lock:
         if _pool_playwright is None:
             from playwright.sync_api import sync_playwright
@@ -123,15 +131,12 @@ def initialize_browser_pool(priority_session=None):
         
         target_session = None
         if priority_session and priority_session in ready:
-            # Swap immediately if we need a priority session
             if len(_browser_pool) >= 1:
                 old_path = list(_browser_pool.keys())[0]
                 if old_path != priority_session:
-                    log_to_file(f"[Pool] Swapping {os.path.basename(old_path)} for priority {os.path.basename(priority_session)}")
                     close_pooled_browser(old_path)
             target_session = priority_session
         elif len(_browser_pool) == 0 and ready:
-            # Pick the next available in rotation
             target_session = ready[0]
 
         if target_session:
@@ -145,8 +150,14 @@ def initialize_browser_pool(priority_session=None):
                 # Full warm-up
                 page.goto("https://www.instagram.com/", timeout=45000, wait_until="commit")
                 
+                # INSTANT HEARTBEAT: Ping tunnel immediately to keep it alive
+                from config import PUBLIC_URL
+                ping_url = f"{PUBLIC_URL.rstrip('/')}/ping?src=warmup_ping" if PUBLIC_URL else None
+                if ping_url:
+                    page.goto(ping_url, timeout=15000, wait_until="commit")
+
                 _browser_pool[target_session] = {"browser": browser, "context": context, "page": page, "in_use": False}
-                log_to_file(f"[Pool] SUCCESS: {os.path.basename(target_session)} is now WARM in RAM.")
+                log_to_file(f"[Pool] SUCCESS: {os.path.basename(target_session)} is active and pinging.")
             except Exception as e:
                 log_to_file(f"[Pool] Error launching {target_session}: {e}")
 
