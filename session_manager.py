@@ -52,6 +52,7 @@ _pool_playwright = None
 _browser_pool = {} 
 _pool_lock = threading.RLock()
 _pool_initialized = False
+_session_rotation_idx = 0
 
 def load_session_status():
     global _session_stats
@@ -127,17 +128,17 @@ def initialize_browser_pool(priority_session=None):
             return
 
         # 2. Determine target session
-        ready = [s for s in all_sessions if s not in _browser_pool and now >= _session_stats.get(s, {}).get("sleep_until", 0)]
-        
         target_session = None
-        if priority_session and priority_session in ready:
+        if priority_session:
             if len(_browser_pool) >= 1:
                 old_path = list(_browser_pool.keys())[0]
                 if old_path != priority_session:
                     close_pooled_browser(old_path)
             target_session = priority_session
-        elif len(_browser_pool) == 0 and ready:
-            target_session = ready[0]
+        elif len(_browser_pool) == 0:
+            # Use rotation to pick the next one
+            s, wait, all_sleeping = get_next_session_with_status()
+            if s: target_session = s
 
         if target_session:
             try:
@@ -193,22 +194,47 @@ def get_pool_health():
     return True
 
 def release_pooled_browser(path):
-    """Closes the browser and immediately triggers a launch for the NEXT session to keep the pool warm."""
+    """Closes the browser and marks it for a 2-minute cooldown before it can be used again."""
     with _pool_lock:
         if path in _browser_pool:
             close_pooled_browser(path)
     
-    # Proactively launch the next session to keep the tunnel alive
+    # Enforce 2-minute cooldown (120 seconds)
+    mark_session_sleep(path, seconds=120)
+    
+    # Proactively launch the NEXT available session that isn't resting
     threading.Thread(target=initialize_browser_pool, daemon=True).start()
 
 def get_next_session_with_status():
+    """Returns the next session in round-robin rotation that isn't sleeping."""
+    global _session_rotation_idx
     all_sessions = get_all_sessions()
     now = time.time()
     load_session_status()
     
-    available = [s for s in all_sessions if now >= _session_stats.get(s, {}).get("sleep_until", 0)]
-    if available:
-        return available[0], 0, False
+    if not all_sessions:
+        return None, 0, False
+
+    # Try sessions starting from the rotation index
+    for _ in range(len(all_sessions)):
+        idx = _session_rotation_idx % len(all_sessions)
+        s = all_sessions[idx]
+        # Only advance if we found a valid one, or always advance?
+        # Always advance ensures we try the NEXT one next time.
+        _session_rotation_idx += 1
+        
+        status = _session_stats.get(s, {})
+        sleep_until = status.get("sleep_until", 0)
+        
+        if now >= sleep_until:
+            return s, 0, False
+            
+    # If all are sleeping, find the one that wakes up soonest
+    try:
+        min_wait = min((_session_stats.get(s, {}).get("sleep_until", 0) - now) for s in all_sessions)
+        return None, max(0, min_wait), True
+    except:
+        return None, 0, False
     
 def test_headless_session():
     """Simple test to see if a session can reach Instagram feed."""
