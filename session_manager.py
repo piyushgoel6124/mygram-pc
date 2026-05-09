@@ -81,13 +81,32 @@ def mark_session_sleep(session_path):
 
 
 def get_next_session_with_status():
+    """Returns the next available session based on fair rotation and cooldowns."""
     all_sessions = get_all_sessions()
     now = time.time()
     load_session_status()
     
+    # Filter for sessions that aren't in a long sleep (blocked)
     available = [s for s in all_sessions if now >= _session_stats.get(s, {}).get("sleep_until", 0)]
-    if available:
-        return available[0], 0, False
+    
+    if not available:
+        # Check when the earliest one wakes up
+        wake_times = [_session_stats.get(s, {}).get("sleep_until", 0) for s in all_sessions]
+        next_wake = min(wake_times) if wake_times else now + 60
+        return None, next_wake - now, True
+
+    # FAIR ROTATION: Sort by 'last_used' timestamp (pick the one that rested the longest)
+    available.sort(key=lambda s: _session_stats.get(s, {}).get("last_used", 0))
+    selected = available[0]
+
+    # APPLY COOLDOWN: Mark as used and set a 2-minute mandatory cooldown
+    _session_stats[selected] = {
+        "sleep_until": now + 120, # 2 minute cooldown strictly
+        "last_used": now
+    }
+    save_session_status()
+    
+    return selected, 0, False
     
 def test_headless_session():
     """Simple test to see if a session can reach Instagram feed."""

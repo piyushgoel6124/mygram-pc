@@ -14,6 +14,7 @@ users.json
 session_status.json
 *.pem
 .cloudflared/
+persistent_tasks.json
 
 # IDE
 .vscode/
