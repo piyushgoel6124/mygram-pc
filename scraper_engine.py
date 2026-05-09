@@ -158,11 +158,13 @@ def scrape_since_reel(reel_url, logger=None, cancel_event=None, auth_info=None):
 
             if batch_results:
                 for reel in batch_results:
+                    # Include the target reel in the results before finishing
+                    all_reels.append(reel)
+                    
                     if reel['shortcode'] == target_shortcode:
                         found_target = True
-                        log("Target reel reached and processed.")
+                        log("Target reel reached and included in results.")
                         break
-                    all_reels.append(reel)
                 
                 log(f"collected and enriched {len(all_reels)} reels (scroll {scroll_idx})")
             else:

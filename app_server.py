@@ -151,7 +151,7 @@ def run_background_scrape(session_id):
                 results, username = scrape_since_reel(reel_url, logger=lambda m: task["logs"].append(m), cancel_event=cancel_evt)
             
             if results and len(results) > 0:
-                # SUCCESS
+                # SUCCESS with data
                 with scrape_tasks_lock:
                     task["status"] = "completed"
                     task["logs"].append(f"[SYSTEM] Scrape successful! Collected {len(results)} reels.")
@@ -172,7 +172,6 @@ def run_background_scrape(session_id):
                         task["results_path"] = filepath
                         task["display_name"] = display_name
                     
-                    # LOG: Match old behavior (Lines 1705-1718)
                     msg = f"[SYSTEM] CSV Saved: {display_name} ({len(results)} reels)"
                     task["logs"].append(msg)
                     log_to_file(msg)
@@ -181,19 +180,25 @@ def run_background_scrape(session_id):
                     log_to_file(f"File Saving Error: {fe}")
                     task["logs"].append(f"Warning: Data collected but file save failed: {fe}")
                 
-                # Update Stats & Deduct Credits
+                # Update Stats
                 req_user = task.get("username")
                 if req_user:
                     from auth_utils import update_user_stats
                     update_user_stats(req_user, links=1, files=1, rows=len(results))
                 
-                save_tasks() # Persistent save
+                save_tasks()
+            elif any("Target reel reached" in log for log in task.get("logs", [])):
+                # SUCCESS but 0 newer reels (Target was the first one)
+                with scrape_tasks_lock:
+                    task["status"] = "completed"
+                    task["logs"].append("[SYSTEM] No newer reels found (Target was at the top).")
+                save_tasks()
             else:
-                # No results found at all
+                # Actual error or no reels found
                 with scrape_tasks_lock:
                     task["status"] = "error"
                     task["logs"].append("[SYSTEM] No reels were found for this URL.")
-                save_tasks() # Persistent save
+                save_tasks()
                 
         except Exception as e:
             log_to_file(f"Scrape Exception: {e}")
@@ -424,6 +429,8 @@ def app_stream():
                 if task["status"] in ["completed", "error", "cancelled"]:
                     if task["status"] == "completed":
                         yield f"event: complete\ndata: {req_id}\n\n"
+                    # Aggressively signal termination to stop app polling
+                    yield "data: __FINISHED__\n\n"
                     break
             
             time.sleep(1)
