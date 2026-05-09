@@ -50,9 +50,8 @@ def login_and_save_session():
 # Browser Pool globals
 _pool_playwright = None
 _browser_pool = {} 
-_pool_lock = threading.RLock()
+_pool_lock = threading.Lock()
 _pool_initialized = False
-_session_rotation_idx = 0
 
 def load_session_status():
     global _session_stats
@@ -86,6 +85,65 @@ def mark_session_sleep(session_path):
     # REFILL the pool with a new session
     threading.Thread(target=initialize_browser_pool, daemon=True).start()
 
+def initialize_browser_pool():
+    """Maintains exactly 5 persistent browser instances in RAM."""
+    global _pool_playwright, _browser_pool, _pool_initialized
+    
+    with _pool_lock:
+        if _pool_playwright is None:
+            from playwright.sync_api import sync_playwright
+            _pool_playwright = sync_playwright().start()
+
+        all_sessions = get_all_sessions()
+        now = time.time()
+        load_session_status()
+        
+        # 1. How many slots do we need to fill? (Reduced to 3 for stability)
+        current_count = len(_browser_pool)
+        needed = 4 - current_count
+        
+        if needed <= 0:
+            return
+
+        # 2. Find sessions that aren't already in the pool and aren't sleeping
+        ready = [s for s in all_sessions if s not in _browser_pool and now >= _session_stats.get(s, {}).get("sleep_until", 0)]
+        target = ready[:needed]
+        
+        for s in target:
+            try:
+                log_to_file(f"[Pool] Persistent Launch: {os.path.basename(s)}...")
+                browser = _pool_playwright.chromium.launch(headless=True)
+                context = browser.new_context(storage_state=s)
+                page = context.new_page()
+                
+                # Performance: Block media
+                page.route("**/*", lambda route: route.abort() if route.request.resource_type in ["image", "media", "font"] else route.continue_())
+                
+                # Warm up
+                page.goto("https://www.instagram.com/robots.txt", timeout=30000)
+                
+                _browser_pool[s] = {"browser": browser, "context": context, "page": page, "in_use": False}
+                log_to_file(f"[Pool] SUCCESS: {os.path.basename(s)} is now WARM in RAM.")
+                time.sleep(2) # Sequential launch delay
+            except Exception as e:
+                log_to_file(f"[Pool] Error launching {s}: {e}")
+
+    if not _pool_initialized and _browser_pool:
+        log_to_file("==================================================")
+        log_to_file(f"Browser Pool Ready ({len(_browser_pool)}/5). Waiting for tasks...")
+        log_to_file("==================================================")
+        _pool_initialized = True
+
+def close_pooled_browser(path):
+    with _pool_lock:
+        if path in _browser_pool:
+            try:
+                _browser_pool[path]["page"].close()
+                _browser_pool[path]["context"].close()
+                _browser_pool[path]["browser"].close()
+            except: pass
+            del _browser_pool[path]
+
 def get_pooled_browser(path):
     """Returns a page from the pool, checking if the browser is still alive."""
     with _pool_lock:
@@ -98,143 +156,41 @@ def get_pooled_browser(path):
                 log_to_file(f"[Pool] Detected CRASHED browser for {os.path.basename(path)}. Cleaning up.")
                 close_pooled_browser(path)
     
-    # If not in pool, trigger priority launch
-    threading.Thread(target=initialize_browser_pool, args=(path,), daemon=True).start()
+    # If not in pool, try to initialize it immediately
+    log_to_file(f"[Pool] Session {os.path.basename(path)} not in pool. Attempting on-demand launch...")
+    threading.Thread(target=initialize_browser_pool, daemon=True).start()
     return None
 
-def initialize_browser_pool(priority_session=None):
-    """Maintains exactly ONE persistent browser instance. Cleans up zombies to save RAM."""
-    global _pool_playwright, _browser_pool, _pool_initialized
-    
-    # 0. Zombie Cleanup: Kill orphaned chromium processes to free RAM on 1-core VPS
-    try:
-        if not _browser_pool:
-            import subprocess
-            subprocess.run(["taskkill", "/F", "/IM", "chrome.exe", "/T"], capture_output=True)
-            subprocess.run(["taskkill", "/F", "/IM", "chromium.exe", "/T"], capture_output=True)
-    except: pass
-
-    with _pool_lock:
-        if _pool_playwright is None:
-            from playwright.sync_api import sync_playwright
-            _pool_playwright = sync_playwright().start()
-
-        all_sessions = get_all_sessions()
-        now = time.time()
-        load_session_status()
-        
-        # 1. Strict 1-Browser Limit
-        if len(_browser_pool) >= 1 and not priority_session:
-            return
-
-        # 2. Determine target session
-        target_session = None
-        if priority_session:
-            if len(_browser_pool) >= 1:
-                old_path = list(_browser_pool.keys())[0]
-                if old_path != priority_session:
-                    close_pooled_browser(old_path)
-            target_session = priority_session
-        elif len(_browser_pool) == 0:
-            # Use rotation to pick the next one
-            s, wait, all_sleeping = get_next_session_with_status()
-            if s: target_session = s
-
-        if target_session:
-            try:
-                log_to_file(f"[Pool] Warming up: {os.path.basename(target_session)}...")
-                browser = _pool_playwright.chromium.launch(headless=True)
-                context = browser.new_context(storage_state=target_session)
-                page = context.new_page()
-                page.route("**/*", lambda route: route.abort() if route.request.resource_type in ["image", "media", "font"] else route.continue_())
-                
-                # Full warm-up
-                page.goto("https://www.instagram.com/", timeout=45000, wait_until="commit")
-                
-                # INSTANT HEARTBEAT: Ping tunnel immediately to keep it alive
-                from config import PUBLIC_URL
-                ping_url = f"{PUBLIC_URL.rstrip('/')}/ping?src=warmup_ping" if PUBLIC_URL else None
-                if ping_url:
-                    page.goto(ping_url, timeout=15000, wait_until="commit")
-
-                _browser_pool[target_session] = {"browser": browser, "context": context, "page": page, "in_use": False}
-                log_to_file(f"[Pool] SUCCESS: {os.path.basename(target_session)} is active and pinging.")
-            except Exception as e:
-                log_to_file(f"[Pool] Error launching {target_session}: {e}")
-
-def close_pooled_browser(path):
-    with _pool_lock:
-        if path in _browser_pool:
-            try:
-                _browser_pool[path]["page"].close()
-                _browser_pool[path]["context"].close()
-                _browser_pool[path]["browser"].close()
-            except: pass
-            del _browser_pool[path]
-
-def perform_heartbeat():
-    """Pings the tunnel from each idle browser. Must be called from the worker thread."""
+def start_pool_heartbeat():
+    """Periodically pings the tunnel from each browser to keep them warm."""
     from config import PUBLIC_URL
-    base_ping = f"{PUBLIC_URL.rstrip('/')}/ping" if PUBLIC_URL else "http://127.0.0.1:5030/ping"
+    ping_url = f"{PUBLIC_URL.rstrip('/')}/ping" if PUBLIC_URL else "http://localhost:5030/ping"
     
-    with _pool_lock:
-        for path, data in _browser_pool.items():
-            if not data["in_use"]:
-                try:
-                    s_name = os.path.basename(path)
-                    labeled_ping = f"{base_ping}?src=browser_{s_name}"
-                    # Fast ping
-                    data["page"].goto(labeled_ping, timeout=15000, wait_until="commit")
-                except Exception as e:
-                    log_to_file(f"[Heartbeat] {os.path.basename(path)} failed: {e}", to_console=False)
-
-def get_pool_health():
-    """Returns whether any browser recently succeeded in a ping."""
-    # This is a placeholder - for now we'll rely on the logs to see the 'src=browser' pings
-    return True
+    while True:
+        time.sleep(120) # Ping every 2 minutes
+        with _pool_lock:
+            for path, data in _browser_pool.items():
+                if not data["in_use"]:
+                    try:
+                        # Log it to verify it's working
+                        log_to_file(f"[Heartbeat] {os.path.basename(path)} pinging tunnel...")
+                        data["page"].goto(ping_url, timeout=30000)
+                    except Exception as e:
+                        log_to_file(f"[Heartbeat] Error for {os.path.basename(path)}: {e}")
 
 def release_pooled_browser(path):
-    """Closes the browser and marks it for a 2-minute cooldown before it can be used again."""
     with _pool_lock:
         if path in _browser_pool:
-            close_pooled_browser(path)
-    
-    # Enforce 2-minute cooldown (120 seconds)
-    mark_session_sleep(path, seconds=120)
-    
-    # Proactively launch the NEXT available session that isn't resting
-    threading.Thread(target=initialize_browser_pool, daemon=True).start()
+            _browser_pool[path]["in_use"] = False
 
 def get_next_session_with_status():
-    """Returns the next session in round-robin rotation that isn't sleeping."""
-    global _session_rotation_idx
     all_sessions = get_all_sessions()
     now = time.time()
     load_session_status()
     
-    if not all_sessions:
-        return None, 0, False
-
-    # Try sessions starting from the rotation index
-    for _ in range(len(all_sessions)):
-        idx = _session_rotation_idx % len(all_sessions)
-        s = all_sessions[idx]
-        # Only advance if we found a valid one, or always advance?
-        # Always advance ensures we try the NEXT one next time.
-        _session_rotation_idx += 1
-        
-        status = _session_stats.get(s, {})
-        sleep_until = status.get("sleep_until", 0)
-        
-        if now >= sleep_until:
-            return s, 0, False
-            
-    # If all are sleeping, find the one that wakes up soonest
-    try:
-        min_wait = min((_session_stats.get(s, {}).get("sleep_until", 0) - now) for s in all_sessions)
-        return None, max(0, min_wait), True
-    except:
-        return None, 0, False
+    available = [s for s in all_sessions if now >= _session_stats.get(s, {}).get("sleep_until", 0)]
+    if available:
+        return available[0], 0, False
     
 def test_headless_session():
     """Simple test to see if a session can reach Instagram feed."""

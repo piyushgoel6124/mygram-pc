@@ -22,37 +22,44 @@ request_queue = []
 queue_lock = threading.Lock()
 scrape_lock = threading.Lock()
 
-# Global tracking for cyclic heartbeats in the worker
-last_worker_heartbeat = 0
-heartbeat_rotation_idx = 0
-
 def health_monitor_loop():
-    """Simplified health monitor (Browsers now handled by the Worker)."""
-    import requests
-    from config import PUBLIC_URL
+    """Periodically checks and logs the health of all components ."""
     log_to_file("[Health Monitor] Started.")
     while True:
         try:
             time.sleep(60)
             status = []
             
-            flask_ok = False
+            # 1. Check Flask (Internal)
             try:
-                if requests.get("http://127.0.0.1:5030/ping?src=health_check", timeout=5).status_code == 200:
-                    flask_ok = True
-            except: pass
-            
-            tunnel_ok = False
-            if PUBLIC_URL:
-                try:
-                    if requests.get(f"{PUBLIC_URL}/ping?src=health_check", timeout=5).status_code == 200:
-                        tunnel_ok = True
-                except: pass
+                import requests
+                res = requests.get("http://localhost:5030/ping", timeout=5)
+                if res.status_code == 200:
+                    status.append("FLASK: OK")
+                else:
+                    status.append(f"FLASK: FAIL ({res.status_code})")
+            except:
+                status.append("FLASK: UNREACHABLE")
 
-            status.append(f"FLASK: {'OK' if flask_ok else 'ERR'}")
-            status.append(f"TUNNEL: {'OK' if tunnel_ok else 'ERR'}")
-            status.append(f"WORKER: {'OK' if any(t.name == 'ScraperWorker' and t.is_alive() for t in threading.enumerate()) else 'STOPPED'}")
-            status.append(f"RAM: {psutil.virtual_memory().percent}%")
+            # 2. Check Public Tunnel Reachability
+            try:
+                from config import PUBLIC_URL
+                res_pub = requests.get(f"{PUBLIC_URL}/ping", timeout=8)
+                if res_pub.status_code == 200:
+                    status.append("TUNNEL: OK")
+                else:
+                    status.append("TUNNEL: LINK_ERROR")
+            except:
+                status.append("TUNNEL: OFFLINE")
+
+            # 3. Check Worker Thread
+            # (Simple check: is the thread alive)
+            worker_alive = any(t.name == "ScraperWorker" and t.is_alive() for t in threading.enumerate())
+            status.append(f"WORKER: {'OK' if worker_alive else 'STOPPED'}")
+
+            # 4. Resources
+            mem = psutil.virtual_memory().percent
+            status.append(f"RAM: {mem}%")
 
             log_to_file(f"[HEALTH] | {' | '.join(status)} |")
             
@@ -60,14 +67,12 @@ def health_monitor_loop():
             log_to_file(f"[Health Monitor Error] {e}")
 
 def worker_loop():
-    """Synchronized Worker: Scrapes OR Heartbeats (one at a time)."""
-    global last_worker_heartbeat, heartbeat_rotation_idx
     log_to_file("[Worker] Background loop started.")
     try: initialize_browser_pool()
     except: pass
     
     while True:
-        try: initialize_browser_pool()
+        try: initialize_browser_pool() # Idle refresh
         except: pass
 
         target_id = None
@@ -76,31 +81,7 @@ def worker_loop():
         
         if target_id:
             run_background_scrape(target_id)
-            # Reset heartbeat timer after a real scrape to avoid redundant pings
-            last_worker_heartbeat = time.time()
         else:
-            # IDLE: Perform cyclic heartbeat every 60s
-            now = time.time()
-            if now - last_worker_heartbeat > 60:
-                import session_manager
-                from config import PUBLIC_URL
-                base_ping = f"{PUBLIC_URL.rstrip('/')}/ping" if PUBLIC_URL else "http://127.0.0.1:5030/ping"
-                
-                with session_manager._pool_lock:
-                    idle_sessions = [p for p, d in session_manager._browser_pool.items() if not d["in_use"]]
-                    if idle_sessions:
-                        idx = heartbeat_rotation_idx % len(idle_sessions)
-                        path = idle_sessions[idx]
-                        data = session_manager._browser_pool[path]
-                        try:
-                            s_name = os.path.basename(path)
-                            data["page"].goto(f"{base_ping}?src=worker_heartbeat_{s_name}", timeout=15000, wait_until="commit")
-                            heartbeat_rotation_idx += 1
-                        except Exception as e:
-                            log_to_file(f"[Worker Heartbeat] {s_name} failed: {e}", to_console=False)
-                
-                last_worker_heartbeat = now
-            
             time.sleep(5)
 
 def run_background_scrape(session_id):
@@ -356,13 +337,7 @@ def app_status(req_id=None):
 
     with scrape_tasks_lock:
         task = scrape_tasks.get(req_id)
-        if not task:
-            # Send a fake error task to make the app stop spamming
-            return jsonify({
-                "status": "error", 
-                "message": "Request Expired/Invalid", 
-                "logs": ["[System] Error: Task ID not found on server. It may have expired or the server was restarted."]
-            })
+        if not task: return jsonify({"error": "Task not found"}), 404
         
         response = {
             "status": task["status"],
@@ -395,8 +370,7 @@ def app_stream():
             with scrape_tasks_lock:
                 task = scrape_tasks.get(req_id)
                 if not task: 
-                    yield "event: status\ndata: error\n\n"
-                    yield "data: [SYSTEM] Task not found or expired.\n\n"
+                    yield "data: [SYSTEM] Task not found.\n\n"
                     break
                 
                 # 2. Send new logs
@@ -522,6 +496,8 @@ def start_server():
             log_to_file("[System] WARNING: Tunnel is taking too long. Starting browsers anyway...")
 
         log_to_file("[System] --- Phase 4: Initializing Browser Pool & Worker ---")
+        from session_manager import start_pool_heartbeat
+        threading.Thread(target=start_pool_heartbeat, name="PoolHeartbeat", daemon=True).start()
         threading.Thread(target=worker_loop, name="ScraperWorker", daemon=True).start()
 
     # 1. Start Health Monitor

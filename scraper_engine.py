@@ -15,8 +15,6 @@ def scrape_since_reel(reel_url, logger=None, cancel_event=None, auth_info=None):
         if logger: logger(msg)
         log_to_file(f"[Scraper] {msg}")
 
-    all_reels = []
-
     def is_cancelled():
         return cancel_event and cancel_event.is_set()
 
@@ -33,17 +31,10 @@ def scrape_since_reel(reel_url, logger=None, cancel_event=None, auth_info=None):
         time.sleep(min(5, wait))
 
     log(f"Using session: {os.path.basename(current_session)}")
-    # Wait for browser to be ready (up to 60s for on-demand launch/warmup)
-    page = None
-    for attempt in range(7): # 0s, 10s, 20s, 30s, 40s, 50s, 60s
-        page = get_pooled_browser(current_session)
-        if page: break
-        if attempt < 6:
-            log(f"Waiting for browser pool to warm up session: {os.path.basename(current_session)}... (Attempt {attempt+1}/7)")
-            time.sleep(10)
+    page = get_pooled_browser(current_session)
     
     if not page:
-        log(f"ERROR: Browser pool could not provide session {os.path.basename(current_session)} after 60s.")
+        log("No pooled browser available.")
         return [], None
 
     try:
@@ -51,45 +42,20 @@ def scrape_since_reel(reel_url, logger=None, cancel_event=None, auth_info=None):
         if not match: return [], None
         target_shortcode = match.group(1)
 
-        # Ensure we are on instagram.com origin before fetching (Fixes CORS/Failed to fetch)
-        try:
-            if "instagram.com" not in page.url:
-                page.goto("https://www.instagram.com/", timeout=15000, wait_until="commit")
-        except: pass
-
         # Step 2: Identify Author (Lightweight - No data enrichment yet)
         target_data = page.evaluate("""async ({shortcode, app_id, asbd_id, doc_id}) => {
-            const fetchWithRetry = async (url, options, retries = 3) => {
-                for (let i = 0; i < retries; i++) {
-                    try {
-                        const res = await fetch(url, options);
-                        if (res.ok) return await res.json();
-                    } catch (e) {
-                        if (i === retries - 1) throw e;
-                        await new Promise(r => setTimeout(r, 2000));
-                    }
-                }
-            };
-
             try {
                 const csrf = document.cookie.split('; ').find(row => row.startsWith('csrftoken='))?.split('=')[1] || "";
-                const json = await fetchWithRetry("https://www.instagram.com/graphql/query", {
+                const res = await fetch("https://www.instagram.com/graphql/query", {
                     method: "POST",
-                    headers: { 
-                        "Content-Type": "application/x-www-form-urlencoded", 
-                        "X-CSRFToken": csrf, 
-                        "X-IG-App-ID": app_id, 
-                        "X-ASBD-ID": asbd_id 
-                    },
+                    headers: { "Content-Type": "application/x-www-form-urlencoded", "X-CSRFToken": csrf, "X-IG-App-ID": app_id, "X-ASBD-ID": asbd_id },
                     body: new URLSearchParams({ variables: JSON.stringify({ shortcode }), doc_id: doc_id }).toString(),
                 });
-                
+                const json = await res.json();
                 const m = json?.data?.xdt_shortcode_media;
-                if (!m) return { error: "No media data (Session might be stale)" };
+                if (!m) return { error: "No media data" };
                 return { username: m.owner?.username, timestamp: m.taken_at_timestamp };
-            } catch (e) { 
-                return { error: "Network Error: " + e.message }; 
-            }
+            } catch (e) { return { error: e.message }; }
         }""", {"shortcode": target_shortcode, "app_id": APP_ID, "asbd_id": ASBD_ID, "doc_id": DOC_ID})
 
         if not target_data or "error" in target_data:
