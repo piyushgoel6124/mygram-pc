@@ -16,11 +16,39 @@ from scraper_engine import scrape_since_reel
 app = Flask(__name__)
 
 # Global Task State
+TASKS_FILE = "persistent_tasks.json"
 scrape_tasks = {}
 scrape_tasks_lock = threading.Lock()
 request_queue = []
 queue_lock = threading.Lock()
 scrape_lock = threading.Lock()
+
+def load_tasks():
+    global scrape_tasks
+    if os.path.exists(TASKS_FILE):
+        try:
+            with open(TASKS_FILE, 'r') as f:
+                data = json.load(f)
+                # Re-create threading Events for loaded tasks
+                for tid in data:
+                    data[tid]["event"] = threading.Event()
+                return data
+        except: return {}
+    return {}
+
+def save_tasks():
+    with scrape_tasks_lock:
+        # Don't save the threading.Event object (not JSON serializable)
+        serializable = {}
+        for tid, task in scrape_tasks.items():
+            serializable[tid] = {k: v for k, v in task.items() if k != "event"}
+        try:
+            with open(TASKS_FILE, 'w') as f:
+                json.dump(serializable, f)
+        except: pass
+
+# Load tasks on module import
+scrape_tasks = load_tasks()
 
 def health_monitor_loop():
     """Periodically checks and logs the health of all components ."""
@@ -157,20 +185,22 @@ def run_background_scrape(session_id):
                 if req_user:
                     from auth_utils import update_user_stats
                     update_user_stats(req_user, links=1, files=1, rows=len(results))
+                
+                save_tasks() # Persistent save
             else:
                 # No results found at all
                 with scrape_tasks_lock:
                     task["status"] = "error"
                     task["logs"].append("[SYSTEM] No reels were found for this URL.")
+                save_tasks() # Persistent save
                 
         except Exception as e:
             log_to_file(f"Scrape Exception: {e}")
-            # If the scraper itself crashed but we might have partial data (handled in engine)
-            # we check if we still got results. If not, mark error.
             with scrape_tasks_lock:
                 if task["status"] != "completed":
                     task["status"] = "error"
                     task["logs"].append(f"ERROR: {e}")
+            save_tasks() # Persistent save
 
 @app.route('/ping')
 def ping():
@@ -261,6 +291,19 @@ def app_submit():
     if not success:
         return jsonify({"error": msg}), 403
 
+    # Cleanup OLD task for this user (Keep only the latest one active)
+    with scrape_tasks_lock:
+        old_tids = [tid for tid, t in scrape_tasks.items() if t.get("username") == username and tid != req_id]
+        for tid in old_tids:
+            # Delete CSV
+            old_csv = os.path.join(OUTPUTS_DIR, f"{tid}.csv")
+            if os.path.exists(old_csv): 
+                try: os.remove(old_csv)
+                except: pass
+            # Delete from state
+            del scrape_tasks[tid]
+            log_to_file(f"[System] Cleaned up old task {tid} for user {username}")
+
     # Queue the task
     req_id = str(uuid.uuid4())
     cancel_evt = threading.Event()
@@ -270,15 +313,16 @@ def app_submit():
             "id": req_id,
             "username": username,
             "url": reel_url,
+            "type": "SINGLE",
             "status": "queued",
-            "timestamp": time.time(),
-            "logs": [],
-            "event": cancel_evt
+            "event": cancel_evt,
+            "logs": [f"[SYSTEM] Task Queued: {reel_url}"]
         }
     
     with queue_lock:
         request_queue.append(req_id)
     
+    save_tasks() # Persistent save
     return jsonify({"status": "success", "request_id": req_id})
 
 @app.route('/upload', methods=['POST'])
@@ -332,13 +376,7 @@ def app_status(req_id=None):
 
     with scrape_tasks_lock:
         task = scrape_tasks.get(req_id)
-        if not task: 
-            # Nuclear Option: Return 'completed' to force the app to remove the task 
-            # from its active list and stop the background polling loop.
-            return jsonify({
-                "status": "completed", 
-                "logs": ["[SYSTEM] Task lost due to server restart. Stopping app requests."]
-            }), 200
+        if not task: return jsonify({"error": "Task not found"}), 404
         
         response = {
             "status": task["status"],
@@ -362,12 +400,6 @@ def app_stream():
         last_idx = 0
         last_heartbeat = time.time()
         
-        # Check if task exists immediately
-        with scrape_tasks_lock:
-            if req_id not in scrape_tasks:
-                yield "data: __FINISHED__\n\n"
-                return
-
         while True:
             # 1. Heartbeat to keep connection alive
             if time.time() - last_heartbeat > 15:
@@ -503,7 +535,16 @@ def start_server():
         else:
             log_to_file("[System] WARNING: Tunnel is taking too long. Starting browsers anyway...")
 
-        log_to_file("[System] --- Phase 4: Initializing Browser Pool & Worker ---")
+        log_to_file("[System] --- Phase 4: Recovering Tasks & Starting Worker ---")
+        # Recover queued/running tasks from disk
+        with scrape_tasks_lock:
+            for tid, task in scrape_tasks.items():
+                if task["status"] in ["queued", "running"]:
+                    log_to_file(f"[Recovery] Re-queueing task: {tid} ({task['url']})")
+                    with queue_lock:
+                        if tid not in request_queue:
+                            request_queue.append(tid)
+        
         threading.Thread(target=worker_loop, name="ScraperWorker", daemon=True).start()
 
     # 1. Start Health Monitor
