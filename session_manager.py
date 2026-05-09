@@ -85,8 +85,24 @@ def mark_session_sleep(session_path):
     # REFILL the pool with a new session
     threading.Thread(target=initialize_browser_pool, daemon=True).start()
 
-def initialize_browser_pool():
-    """Maintains exactly 5 persistent browser instances in RAM."""
+def get_pooled_browser(path):
+    """Returns a page from the pool, checking if the browser is still alive."""
+    with _pool_lock:
+        if path in _browser_pool and not _browser_pool[path]["in_use"]:
+            try:
+                _browser_pool[path]["page"].url
+                _browser_pool[path]["in_use"] = True
+                return _browser_pool[path]["page"]
+            except Exception:
+                log_to_file(f"[Pool] Detected CRASHED browser for {os.path.basename(path)}. Cleaning up.")
+                close_pooled_browser(path)
+    
+    # If not in pool, trigger priority launch
+    threading.Thread(target=initialize_browser_pool, args=(path,), daemon=True).start()
+    return None
+
+def initialize_browser_pool(priority_session=None):
+    """Maintains persistent browser instances, prioritizing specific sessions if requested."""
     global _pool_playwright, _browser_pool, _pool_initialized
     
     with _pool_lock:
@@ -98,41 +114,37 @@ def initialize_browser_pool():
         now = time.time()
         load_session_status()
         
-        # 1. How many slots do we need to fill? (Reduced to 3 for stability)
+        # 1. How many slots do we need to fill? (Limit 3)
         current_count = len(_browser_pool)
-        needed = 4 - current_count
+        needed = 3 - current_count
         
-        if needed <= 0:
+        if needed <= 0 and not priority_session:
             return
 
-        # 2. Find sessions that aren't already in the pool and aren't sleeping
+        # 2. Determine target sessions
         ready = [s for s in all_sessions if s not in _browser_pool and now >= _session_stats.get(s, {}).get("sleep_until", 0)]
-        target = ready[:needed]
+        
+        target = []
+        if priority_session and priority_session in ready:
+            target.append(priority_session)
+            ready.remove(priority_session)
+        
+        target.extend(ready[:max(0, 3 - len(_browser_pool) - len(target))])
         
         for s in target:
+            if len(_browser_pool) >= 3 and s != priority_session: continue
             try:
-                log_to_file(f"[Pool] Persistent Launch: {os.path.basename(s)}...")
+                log_to_file(f"[Pool] Launching: {os.path.basename(s)}...")
                 browser = _pool_playwright.chromium.launch(headless=True)
                 context = browser.new_context(storage_state=s)
                 page = context.new_page()
-                
-                # Performance: Block media
                 page.route("**/*", lambda route: route.abort() if route.request.resource_type in ["image", "media", "font"] else route.continue_())
-                
-                # Warm up
                 page.goto("https://www.instagram.com/robots.txt", timeout=30000)
                 
                 _browser_pool[s] = {"browser": browser, "context": context, "page": page, "in_use": False}
-                log_to_file(f"[Pool] SUCCESS: {os.path.basename(s)} is now WARM in RAM.")
-                time.sleep(2) # Sequential launch delay
+                log_to_file(f"[Pool] SUCCESS: {os.path.basename(s)} is ready.")
             except Exception as e:
                 log_to_file(f"[Pool] Error launching {s}: {e}")
-
-    if not _pool_initialized and _browser_pool:
-        log_to_file("==================================================")
-        log_to_file(f"Browser Pool Ready ({len(_browser_pool)}/5). Waiting for tasks...")
-        log_to_file("==================================================")
-        _pool_initialized = True
 
 def close_pooled_browser(path):
     with _pool_lock:
@@ -144,20 +156,22 @@ def close_pooled_browser(path):
             except: pass
             del _browser_pool[path]
 
-def get_pooled_browser(path):
-    """Returns a page from the pool, checking if the browser is still alive."""
-    with _pool_lock:
-        if path in _browser_pool and not _browser_pool[path]["in_use"]:
-            # Basic health check
-            try:
-                # Check if the page is still responsive
-                _browser_pool[path]["page"].url
-                _browser_pool[path]["in_use"] = True
-                return _browser_pool[path]["page"]
-            except Exception:
-                log_to_file(f"[Pool] Detected CRASHED browser for {os.path.basename(path)}. Cleaning up.")
-                close_pooled_browser(path)
-    return None
+def start_pool_heartbeat():
+    """Periodically pings the tunnel from each browser to keep them warm."""
+    from config import PUBLIC_URL
+    ping_url = f"{PUBLIC_URL.rstrip('/')}/ping" if PUBLIC_URL else "http://localhost:5030/ping"
+    
+    while True:
+        time.sleep(120) # Ping every 2 minutes
+        with _pool_lock:
+            for path, data in _browser_pool.items():
+                if not data["in_use"]:
+                    try:
+                        # Log it to verify it's working
+                        log_to_file(f"[Heartbeat] {os.path.basename(path)} pinging tunnel...")
+                        data["page"].goto(ping_url, timeout=30000)
+                    except Exception as e:
+                        log_to_file(f"[Heartbeat] Error for {os.path.basename(path)}: {e}")
 
 def release_pooled_browser(path):
     with _pool_lock:

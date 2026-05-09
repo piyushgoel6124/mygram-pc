@@ -23,41 +23,40 @@ queue_lock = threading.Lock()
 scrape_lock = threading.Lock()
 
 def health_monitor_loop():
-    """Periodically checks and logs the health of all components ."""
+    """Periodically checks health by having browsers ping the tunnel (keeps them warm)."""
+    from session_manager import _browser_pool, _pool_lock
+    from config import PUBLIC_URL
+    ping_url = f"{PUBLIC_URL.rstrip('/')}/ping" if PUBLIC_URL else "http://localhost:5030/ping"
+    
     log_to_file("[Health Monitor] Started.")
     while True:
         try:
             time.sleep(60)
             status = []
             
-            # 1. Check Flask (Internal)
-            try:
-                import requests
-                res = requests.get("http://localhost:5030/ping", timeout=5)
-                if res.status_code == 200:
-                    status.append("FLASK: OK")
-                else:
-                    status.append(f"FLASK: FAIL ({res.status_code})")
-            except:
-                status.append("FLASK: UNREACHABLE")
+            flask_ok = False
+            tunnel_ok = False
+            
+            # 1. Use Browsers to Ping Tunnel (Keeps them awake + Checks health)
+            with _pool_lock:
+                for path, data in _browser_pool.items():
+                    if not data["in_use"]:
+                        try:
+                            # Log the ping to show browser activity
+                            data["page"].goto(ping_url, timeout=20000)
+                            flask_ok = True
+                            tunnel_ok = True
+                        except Exception:
+                            pass
+            
+            status.append(f"FLASK: {'OK' if flask_ok else 'ERR'}")
+            status.append(f"TUNNEL: {'OK' if tunnel_ok else 'ERR'}")
 
-            # 2. Check Public Tunnel Reachability
-            try:
-                from config import PUBLIC_URL
-                res_pub = requests.get(f"{PUBLIC_URL}/ping", timeout=8)
-                if res_pub.status_code == 200:
-                    status.append("TUNNEL: OK")
-                else:
-                    status.append("TUNNEL: LINK_ERROR")
-            except:
-                status.append("TUNNEL: OFFLINE")
-
-            # 3. Check Worker Thread
-            # (Simple check: is the thread alive)
+            # 2. Check Worker Thread
             worker_alive = any(t.name == "ScraperWorker" and t.is_alive() for t in threading.enumerate())
             status.append(f"WORKER: {'OK' if worker_alive else 'STOPPED'}")
 
-            # 4. Resources
+            # 3. Resources
             mem = psutil.virtual_memory().percent
             status.append(f"RAM: {mem}%")
 
