@@ -332,7 +332,12 @@ def app_status(req_id=None):
 
     with scrape_tasks_lock:
         task = scrape_tasks.get(req_id)
-        if not task: return jsonify({"error": "Task not found"}), 404
+        if not task: 
+            # Return 200 OK with error status to stop app from retrying 404s
+            return jsonify({
+                "status": "error", 
+                "logs": ["[SYSTEM] Task not found. The server may have restarted."]
+            }), 200
         
         response = {
             "status": task["status"],
@@ -356,6 +361,12 @@ def app_stream():
         last_idx = 0
         last_heartbeat = time.time()
         
+        # Check if task exists immediately
+        with scrape_tasks_lock:
+            if req_id not in scrape_tasks:
+                yield "data: __FINISHED__\n\n"
+                return
+
         while True:
             # 1. Heartbeat to keep connection alive
             if time.time() - last_heartbeat > 15:
