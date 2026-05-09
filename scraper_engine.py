@@ -33,17 +33,17 @@ def scrape_since_reel(reel_url, logger=None, cancel_event=None, auth_info=None):
         time.sleep(min(5, wait))
 
     log(f"Using session: {os.path.basename(current_session)}")
-    # Wait for browser to be ready (up to 30s for on-demand launch)
+    # Wait for browser to be ready (up to 60s for on-demand launch/warmup)
     page = None
-    for attempt in range(4): # 0s, 10s, 20s, 30s
+    for attempt in range(7): # 0s, 10s, 20s, 30s, 40s, 50s, 60s
         page = get_pooled_browser(current_session)
         if page: break
-        if attempt < 3:
-            log(f"Waiting for browser pool to warm up session: {os.path.basename(current_session)}... (Attempt {attempt+1}/4)")
+        if attempt < 6:
+            log(f"Waiting for browser pool to warm up session: {os.path.basename(current_session)}... (Attempt {attempt+1}/7)")
             time.sleep(10)
     
     if not page:
-        log(f"ERROR: Browser pool could not provide session {os.path.basename(current_session)} after 30s.")
+        log(f"ERROR: Browser pool could not provide session {os.path.basename(current_session)} after 60s.")
         return [], None
 
     try:

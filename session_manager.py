@@ -102,7 +102,7 @@ def get_pooled_browser(path):
     return None
 
 def initialize_browser_pool(priority_session=None):
-    """Maintains persistent browser instances, prioritizing specific sessions if requested."""
+    """Maintains exactly ONE persistent browser instance for maximum RAM efficiency."""
     global _pool_playwright, _browser_pool, _pool_initialized
     
     with _pool_lock:
@@ -114,39 +114,41 @@ def initialize_browser_pool(priority_session=None):
         now = time.time()
         load_session_status()
         
-        # 1. How many slots do we need to fill? (Limit 3)
-        current_count = len(_browser_pool)
-        needed = 3 - current_count
-        
-        if needed <= 0 and not priority_session:
+        # 1. Strict 1-Browser Limit
+        if len(_browser_pool) >= 1 and not priority_session:
             return
 
-        # 2. Determine target sessions
+        # 2. Determine target session
         ready = [s for s in all_sessions if s not in _browser_pool and now >= _session_stats.get(s, {}).get("sleep_until", 0)]
         
-        target = []
+        target_session = None
         if priority_session and priority_session in ready:
-            target.append(priority_session)
-            ready.remove(priority_session)
-        
-        target.extend(ready[:max(0, 3 - len(_browser_pool) - len(target))])
-        
-        for s in target:
-            if len(_browser_pool) >= 3 and s != priority_session: continue
+            # Swap immediately if we need a priority session
+            if len(_browser_pool) >= 1:
+                old_path = list(_browser_pool.keys())[0]
+                if old_path != priority_session:
+                    log_to_file(f"[Pool] Swapping {os.path.basename(old_path)} for priority {os.path.basename(priority_session)}")
+                    close_pooled_browser(old_path)
+            target_session = priority_session
+        elif len(_browser_pool) == 0 and ready:
+            # Pick the next available in rotation
+            target_session = ready[0]
+
+        if target_session:
             try:
-                log_to_file(f"[Pool] Launching: {os.path.basename(s)}...")
+                log_to_file(f"[Pool] Warming up: {os.path.basename(target_session)}...")
                 browser = _pool_playwright.chromium.launch(headless=True)
-                context = browser.new_context(storage_state=s)
+                context = browser.new_context(storage_state=target_session)
                 page = context.new_page()
                 page.route("**/*", lambda route: route.abort() if route.request.resource_type in ["image", "media", "font"] else route.continue_())
                 
-                # Navigate to main page instead of robots.txt to ensure cookies/CSRF are active
+                # Full warm-up
                 page.goto("https://www.instagram.com/", timeout=45000, wait_until="commit")
                 
-                _browser_pool[s] = {"browser": browser, "context": context, "page": page, "in_use": False}
-                log_to_file(f"[Pool] SUCCESS: {os.path.basename(s)} is ready.")
+                _browser_pool[target_session] = {"browser": browser, "context": context, "page": page, "in_use": False}
+                log_to_file(f"[Pool] SUCCESS: {os.path.basename(target_session)} is now WARM in RAM.")
             except Exception as e:
-                log_to_file(f"[Pool] Error launching {s}: {e}")
+                log_to_file(f"[Pool] Error launching {target_session}: {e}")
 
 def close_pooled_browser(path):
     with _pool_lock:
@@ -180,9 +182,13 @@ def get_pool_health():
     return True
 
 def release_pooled_browser(path):
+    """Closes the browser and immediately triggers a launch for the NEXT session to keep the pool warm."""
     with _pool_lock:
         if path in _browser_pool:
-            _browser_pool[path]["in_use"] = False
+            close_pooled_browser(path)
+    
+    # Proactively launch the next session to keep the tunnel alive
+    threading.Thread(target=initialize_browser_pool, daemon=True).start()
 
 def get_next_session_with_status():
     all_sessions = get_all_sessions()
