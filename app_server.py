@@ -22,24 +22,52 @@ request_queue = []
 queue_lock = threading.Lock()
 scrape_lock = threading.Lock()
 
+# Global rotation index for heartbeats
+heartbeat_rotation_idx = 0
+
 def health_monitor_loop():
-    """Simplified health monitor (Browsers now ping via the Worker Thread)."""
+    """Periodically checks health by having ONE idle browser ping the tunnel (Rotation)."""
+    global heartbeat_rotation_idx
+    import session_manager
     import requests
     from config import PUBLIC_URL
+    base_ping = f"{PUBLIC_URL.rstrip('/')}/ping" if PUBLIC_URL else "http://127.0.0.1:5030/ping"
+    
     log_to_file("[Health Monitor] Started.")
     while True:
         try:
             time.sleep(60)
             status = []
-            
             flask_ok = False
-            try:
-                if requests.get("http://127.0.0.1:5030/ping?src=health_check", timeout=5).status_code == 200:
-                    flask_ok = True
-            except: pass
-            
             tunnel_ok = False
-            if PUBLIC_URL:
+            
+            # 1. Cyclic Browser Ping (Only one per minute)
+            with session_manager._pool_lock:
+                idle_sessions = [path for path, data in session_manager._browser_pool.items() if not data["in_use"]]
+                if idle_sessions:
+                    idx = heartbeat_rotation_idx % len(idle_sessions)
+                    path = idle_sessions[idx]
+                    data = session_manager._browser_pool[path]
+                    
+                    try:
+                        s_name = os.path.basename(path)
+                        labeled_ping = f"{base_ping}?src=cyclic_browser_{s_name}"
+                        data["page"].goto(labeled_ping, timeout=15000, wait_until="commit")
+                        tunnel_ok = True
+                        flask_ok = True
+                        heartbeat_rotation_idx += 1
+                    except Exception as e:
+                        log_to_file(f"[Heartbeat] {os.path.basename(path)} failed: {e}", to_console=False)
+            
+            # 2. Local Fallback
+            if not flask_ok:
+                try:
+                    if requests.get("http://127.0.0.1:5030/ping?src=health_check", timeout=5).status_code == 200:
+                        flask_ok = True
+                except: pass
+            
+            # 3. Tunnel Fallback
+            if not tunnel_ok and PUBLIC_URL:
                 try:
                     if requests.get(f"{PUBLIC_URL}/ping?src=health_check", timeout=5).status_code == 200:
                         tunnel_ok = True
@@ -71,11 +99,8 @@ def worker_loop():
         if target_id:
             run_background_scrape(target_id)
         else:
-            # When idle, perform browser heartbeats to keep them warm
-            from session_manager import perform_heartbeat
-            try: perform_heartbeat()
-            except: pass
             time.sleep(10)
+            # No pings here - handled by health_monitor rotation
 
 def run_background_scrape(session_id):
     with scrape_tasks_lock:

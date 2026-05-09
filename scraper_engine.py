@@ -51,18 +51,37 @@ def scrape_since_reel(reel_url, logger=None, cancel_event=None, auth_info=None):
 
         # Step 2: Identify Author (Lightweight - No data enrichment yet)
         target_data = page.evaluate("""async ({shortcode, app_id, asbd_id, doc_id}) => {
+            const fetchWithRetry = async (url, options, retries = 3) => {
+                for (let i = 0; i < retries; i++) {
+                    try {
+                        const res = await fetch(url, options);
+                        if (res.ok) return await res.json();
+                    } catch (e) {
+                        if (i === retries - 1) throw e;
+                        await new Promise(r => setTimeout(r, 2000));
+                    }
+                }
+            };
+
             try {
                 const csrf = document.cookie.split('; ').find(row => row.startsWith('csrftoken='))?.split('=')[1] || "";
-                const res = await fetch("https://www.instagram.com/graphql/query", {
+                const json = await fetchWithRetry("https://www.instagram.com/graphql/query", {
                     method: "POST",
-                    headers: { "Content-Type": "application/x-www-form-urlencoded", "X-CSRFToken": csrf, "X-IG-App-ID": app_id, "X-ASBD-ID": asbd_id },
+                    headers: { 
+                        "Content-Type": "application/x-www-form-urlencoded", 
+                        "X-CSRFToken": csrf, 
+                        "X-IG-App-ID": app_id, 
+                        "X-ASBD-ID": asbd_id 
+                    },
                     body: new URLSearchParams({ variables: JSON.stringify({ shortcode }), doc_id: doc_id }).toString(),
                 });
-                const json = await res.json();
+                
                 const m = json?.data?.xdt_shortcode_media;
-                if (!m) return { error: "No media data" };
+                if (!m) return { error: "No media data (Session might be stale)" };
                 return { username: m.owner?.username, timestamp: m.taken_at_timestamp };
-            } catch (e) { return { error: e.message }; }
+            } catch (e) { 
+                return { error: "Network Error: " + e.message }; 
+            }
         }""", {"shortcode": target_shortcode, "app_id": APP_ID, "asbd_id": ASBD_ID, "doc_id": DOC_ID})
 
         if not target_data or "error" in target_data:
