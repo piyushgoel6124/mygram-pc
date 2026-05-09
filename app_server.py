@@ -22,52 +22,28 @@ request_queue = []
 queue_lock = threading.Lock()
 scrape_lock = threading.Lock()
 
-# Global rotation index for heartbeats
+# Global tracking for cyclic heartbeats in the worker
+last_worker_heartbeat = 0
 heartbeat_rotation_idx = 0
 
 def health_monitor_loop():
-    """Periodically checks health by having ONE idle browser ping the tunnel (Rotation)."""
-    global heartbeat_rotation_idx
-    import session_manager
+    """Simplified health monitor (Browsers now handled by the Worker)."""
     import requests
     from config import PUBLIC_URL
-    base_ping = f"{PUBLIC_URL.rstrip('/')}/ping" if PUBLIC_URL else "http://127.0.0.1:5030/ping"
-    
     log_to_file("[Health Monitor] Started.")
     while True:
         try:
             time.sleep(60)
             status = []
+            
             flask_ok = False
+            try:
+                if requests.get("http://127.0.0.1:5030/ping?src=health_check", timeout=5).status_code == 200:
+                    flask_ok = True
+            except: pass
+            
             tunnel_ok = False
-            
-            # 1. Cyclic Browser Ping (Only one per minute)
-            with session_manager._pool_lock:
-                idle_sessions = [path for path, data in session_manager._browser_pool.items() if not data["in_use"]]
-                if idle_sessions:
-                    idx = heartbeat_rotation_idx % len(idle_sessions)
-                    path = idle_sessions[idx]
-                    data = session_manager._browser_pool[path]
-                    
-                    try:
-                        s_name = os.path.basename(path)
-                        labeled_ping = f"{base_ping}?src=cyclic_browser_{s_name}"
-                        data["page"].goto(labeled_ping, timeout=15000, wait_until="commit")
-                        tunnel_ok = True
-                        flask_ok = True
-                        heartbeat_rotation_idx += 1
-                    except Exception as e:
-                        log_to_file(f"[Heartbeat] {os.path.basename(path)} failed: {e}", to_console=False)
-            
-            # 2. Local Fallback
-            if not flask_ok:
-                try:
-                    if requests.get("http://127.0.0.1:5030/ping?src=health_check", timeout=5).status_code == 200:
-                        flask_ok = True
-                except: pass
-            
-            # 3. Tunnel Fallback
-            if not tunnel_ok and PUBLIC_URL:
+            if PUBLIC_URL:
                 try:
                     if requests.get(f"{PUBLIC_URL}/ping?src=health_check", timeout=5).status_code == 200:
                         tunnel_ok = True
@@ -84,12 +60,14 @@ def health_monitor_loop():
             log_to_file(f"[Health Monitor Error] {e}")
 
 def worker_loop():
+    """Synchronized Worker: Scrapes OR Heartbeats (one at a time)."""
+    global last_worker_heartbeat, heartbeat_rotation_idx
     log_to_file("[Worker] Background loop started.")
     try: initialize_browser_pool()
     except: pass
     
     while True:
-        try: initialize_browser_pool() # Idle refresh
+        try: initialize_browser_pool()
         except: pass
 
         target_id = None
@@ -98,9 +76,32 @@ def worker_loop():
         
         if target_id:
             run_background_scrape(target_id)
+            # Reset heartbeat timer after a real scrape to avoid redundant pings
+            last_worker_heartbeat = time.time()
         else:
-            time.sleep(10)
-            # No pings here - handled by health_monitor rotation
+            # IDLE: Perform cyclic heartbeat every 60s
+            now = time.time()
+            if now - last_worker_heartbeat > 60:
+                import session_manager
+                from config import PUBLIC_URL
+                base_ping = f"{PUBLIC_URL.rstrip('/')}/ping" if PUBLIC_URL else "http://127.0.0.1:5030/ping"
+                
+                with session_manager._pool_lock:
+                    idle_sessions = [p for p, d in session_manager._browser_pool.items() if not d["in_use"]]
+                    if idle_sessions:
+                        idx = heartbeat_rotation_idx % len(idle_sessions)
+                        path = idle_sessions[idx]
+                        data = session_manager._browser_pool[path]
+                        try:
+                            s_name = os.path.basename(path)
+                            data["page"].goto(f"{base_ping}?src=worker_heartbeat_{s_name}", timeout=15000, wait_until="commit")
+                            heartbeat_rotation_idx += 1
+                        except Exception as e:
+                            log_to_file(f"[Worker Heartbeat] {s_name} failed: {e}", to_console=False)
+                
+                last_worker_heartbeat = now
+            
+            time.sleep(5)
 
 def run_background_scrape(session_id):
     with scrape_tasks_lock:
