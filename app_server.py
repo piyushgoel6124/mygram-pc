@@ -10,7 +10,7 @@ from flask import Flask, request, jsonify, Response, stream_with_context, send_f
 from config import ADMIN_USER, ADMIN_PASS, OUTPUTS_DIR
 from logger_utils import log_to_file
 from auth_utils import load_users, save_users, check_auth, update_user_stats
-from session_manager import initialize_browser_pool
+
 from scraper_engine import scrape_since_reel
 
 app = Flask(__name__)
@@ -68,21 +68,8 @@ def health_monitor_loop():
 
 def worker_loop():
     log_to_file("[Worker] Background loop started.")
-    try: initialize_browser_pool()
-    except: pass
     
-    last_heartbeat = 0
     while True:
-        try: initialize_browser_pool() # Idle refresh
-        except: pass
-
-        # Heartbeat (Every 3 minutes)
-        if time.time() - last_heartbeat > 180:
-            from session_manager import ping_tunnel_from_pool
-            try: ping_tunnel_from_pool()
-            except: pass
-            last_heartbeat = time.time()
-        
         target_id = None
         with queue_lock:
             if request_queue: target_id = request_queue.pop(0)
@@ -378,7 +365,8 @@ def app_stream():
             with scrape_tasks_lock:
                 task = scrape_tasks.get(req_id)
                 if not task: 
-                    yield "data: [SYSTEM] Task not found.\n\n"
+                    # Match Android app logic (MainActivity.kt line 300) to stop stubborn retries
+                    yield "data: __FINISHED__\n\n"
                     break
                 
                 # 2. Send new logs

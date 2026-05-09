@@ -6,8 +6,7 @@ from playwright.sync_api import sync_playwright
 from config import DOC_ID, APP_ID, ASBD_ID
 from logger_utils import log_to_file
 from session_manager import (
-    get_next_session_with_status, get_pooled_browser, 
-    release_pooled_browser, mark_session_sleep
+    get_next_session_with_status, mark_session_sleep
 )
 
 def scrape_since_reel(reel_url, logger=None, cancel_event=None, auth_info=None):
@@ -31,13 +30,18 @@ def scrape_since_reel(reel_url, logger=None, cancel_event=None, auth_info=None):
         time.sleep(min(5, wait))
 
     log(f"Using session: {os.path.basename(current_session)}")
-    page = get_pooled_browser(current_session)
     
-    if not page:
-        log("No pooled browser available.")
-        return [], None
-
+    playwright = None
+    browser = None
     try:
+        playwright = sync_playwright().start()
+        browser = playwright.chromium.launch(headless=True)
+        context = browser.new_context(storage_state=current_session)
+        page = context.new_page()
+        
+        # Block heavy assets to save bandwidth/RAM
+        page.route("**/*", lambda route: route.abort() if route.request.resource_type in ["image", "media", "font"] else route.continue_())
+
         match = re.search(r'/(?:reels?|p)/([^/?#&]+)', reel_url)
         if not match: return [], None
         target_shortcode = match.group(1)
@@ -169,12 +173,17 @@ def scrape_since_reel(reel_url, logger=None, cancel_event=None, auth_info=None):
 
     except Exception as e:
         # If we have data, we don't call it an "Error" to the user
-        if all_reels:
+        if 'all_reels' in locals() and all_reels:
             log(f"Scrape completed with {len(all_reels)} reels (Note: {e})")
             return all_reels, username
         
         log(f"Scrape failed: {e}")
         return [], None
+    finally:
+        try:
+            if browser: browser.close()
+            if playwright: playwright.stop()
+        except: pass
 def scrape_reel(url):
     """CLI helper to scrape a single reel."""
     all_reels, username = scrape_since_reel(url)
