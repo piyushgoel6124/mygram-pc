@@ -23,8 +23,8 @@ queue_lock = threading.Lock()
 scrape_lock = threading.Lock()
 
 def health_monitor_loop():
-    """Periodically checks health by having browsers ping the tunnel (keeps them warm)."""
-    from session_manager import _browser_pool, _pool_lock
+    """Periodically checks health by having browsers ping the tunnel."""
+    import session_manager
     from config import PUBLIC_URL
     import requests
     # Base ping URL
@@ -40,20 +40,22 @@ def health_monitor_loop():
             tunnel_ok = False
             
             # 1. Use Browsers to Ping Tunnel (Priority)
-            with _pool_lock:
-                for path, data in _browser_pool.items():
+            # Access session_manager._browser_pool directly to avoid stale references
+            with session_manager._pool_lock:
+                for path, data in session_manager._browser_pool.items():
                     if not data["in_use"]:
                         try:
-                            # Add label to see which browser is pinging in logs
                             s_name = os.path.basename(path)
                             labeled_ping = f"{base_ping}?src=browser_{s_name}"
                             data["page"].goto(labeled_ping, timeout=15000, wait_until="commit")
                             tunnel_ok = True
                             flask_ok = True
                         except Exception as e:
+                            # Print to console so we can see the real error
+                            print(f"[Heartbeat Error] {os.path.basename(path)}: {e}")
                             log_to_file(f"[Heartbeat] {os.path.basename(path)} failed: {str(e)[:40]}", to_console=False)
             
-            # 2. Local Fallback (labeled as system_fallback)
+            # 2. Local Fallback
             if not flask_ok:
                 try:
                     fallback_url = "http://127.0.0.1:5030/ping?src=system_fallback"
