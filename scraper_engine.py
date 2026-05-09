@@ -51,6 +51,12 @@ def scrape_since_reel(reel_url, logger=None, cancel_event=None, auth_info=None):
         if not match: return [], None
         target_shortcode = match.group(1)
 
+        # Ensure we are on instagram.com origin before fetching (Fixes CORS/Failed to fetch)
+        try:
+            if "instagram.com" not in page.url:
+                page.goto("https://www.instagram.com/", timeout=15000, wait_until="commit")
+        except: pass
+
         # Step 2: Identify Author (Lightweight - No data enrichment yet)
         target_data = page.evaluate("""async ({shortcode, app_id, asbd_id, doc_id}) => {
             const fetchWithRetry = async (url, options, retries = 3) => {

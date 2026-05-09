@@ -139,7 +139,9 @@ def initialize_browser_pool(priority_session=None):
                 context = browser.new_context(storage_state=s)
                 page = context.new_page()
                 page.route("**/*", lambda route: route.abort() if route.request.resource_type in ["image", "media", "font"] else route.continue_())
-                page.goto("https://www.instagram.com/robots.txt", timeout=30000)
+                
+                # Navigate to main page instead of robots.txt to ensure cookies/CSRF are active
+                page.goto("https://www.instagram.com/", timeout=45000, wait_until="commit")
                 
                 _browser_pool[s] = {"browser": browser, "context": context, "page": page, "in_use": False}
                 log_to_file(f"[Pool] SUCCESS: {os.path.basename(s)} is ready.")
