@@ -27,7 +27,7 @@ def health_monitor_loop():
     from session_manager import _browser_pool, _pool_lock
     from config import PUBLIC_URL
     import requests
-    ping_url = f"{PUBLIC_URL.rstrip('/')}/ping" if PUBLIC_URL else "http://localhost:5030/ping"
+    ping_url = f"{PUBLIC_URL.rstrip('/')}/ping" if PUBLIC_URL else "http://127.0.0.1:5030/ping"
     
     log_to_file("[Health Monitor] Started.")
     while True:
@@ -43,35 +43,36 @@ def health_monitor_loop():
                 for path, data in _browser_pool.items():
                     if not data["in_use"]:
                         try:
-                            # Use 'commit' to finish as soon as headers are received (fastest)
+                            # Use 'commit' to finish as soon as headers are received
                             data["page"].goto(ping_url, timeout=15000, wait_until="commit")
-                            flask_ok = True
                             tunnel_ok = True
+                            flask_ok = True # If tunnel ping worked, Flask MUST be alive
                         except Exception as e:
-                            # Log the specific browser error for debugging
                             log_to_file(f"[Heartbeat] {os.path.basename(path)} failed ping: {str(e)[:50]}...", to_console=False)
             
-            # 2. Fallback check (to prevent false ERR logs if tunnel is fine but browsers are slow)
+            # 2. Local Fallback (Direct IPv4 to avoid localhost/IPv6 issues)
             if not flask_ok:
                 try:
-                    if requests.get("http://localhost:5030/ping", timeout=2).status_code == 200:
+                    if requests.get("http://127.0.0.1:5030/ping", timeout=5).status_code == 200:
                         flask_ok = True
                 except: pass
             
+            # 3. Tunnel Fallback
             if not tunnel_ok and PUBLIC_URL:
                 try:
-                    if requests.get(f"{PUBLIC_URL}/ping", timeout=3).status_code == 200:
+                    if requests.get(f"{PUBLIC_URL}/ping", timeout=5).status_code == 200:
                         tunnel_ok = True
+                        flask_ok = True # Logical sync
                 except: pass
             
             status.append(f"FLASK: {'OK' if flask_ok else 'ERR'}")
             status.append(f"TUNNEL: {'OK' if tunnel_ok else 'ERR'}")
 
-            # 3. Check Worker Thread
+            # 4. Check Worker Thread
             worker_alive = any(t.name == "ScraperWorker" and t.is_alive() for t in threading.enumerate())
             status.append(f"WORKER: {'OK' if worker_alive else 'STOPPED'}")
 
-            # 4. Resources
+            # 5. Resources
             mem = psutil.virtual_memory().percent
             status.append(f"RAM: {mem}%")
 
