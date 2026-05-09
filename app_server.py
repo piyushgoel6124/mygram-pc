@@ -355,7 +355,13 @@ def app_status(req_id=None):
 
     with scrape_tasks_lock:
         task = scrape_tasks.get(req_id)
-        if not task: return jsonify({"error": "Task not found"}), 404
+        if not task:
+            # Send a fake error task to make the app stop spamming
+            return jsonify({
+                "status": "error", 
+                "message": "Request Expired/Invalid", 
+                "logs": ["[System] Error: Task ID not found on server. It may have expired or the server was restarted."]
+            })
         
         response = {
             "status": task["status"],
@@ -388,7 +394,8 @@ def app_stream():
             with scrape_tasks_lock:
                 task = scrape_tasks.get(req_id)
                 if not task: 
-                    yield "data: [SYSTEM] Task not found.\n\n"
+                    yield "event: status\ndata: error\n\n"
+                    yield "data: [SYSTEM] Task not found or expired.\n\n"
                     break
                 
                 # 2. Send new logs

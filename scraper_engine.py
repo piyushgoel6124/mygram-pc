@@ -15,6 +15,8 @@ def scrape_since_reel(reel_url, logger=None, cancel_event=None, auth_info=None):
         if logger: logger(msg)
         log_to_file(f"[Scraper] {msg}")
 
+    all_reels = []
+
     def is_cancelled():
         return cancel_event and cancel_event.is_set()
 
