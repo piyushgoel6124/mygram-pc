@@ -92,7 +92,7 @@ def scrape_since_reel(reel_url, logger=None, cancel_event=None, auth_info=None):
         
         log(f"Scrolling {username}'s profile...")
         found_target = False
-        scanned_shortcodes = {target_shortcode}
+        scanned_shortcodes = set() # Start empty so we don't ignore the target reel
         last_new_reel_time = time.time()
 
         for scroll_idx in range(1, 46): 

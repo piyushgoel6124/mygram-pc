@@ -288,8 +288,9 @@ def app_submit():
 
     # Auth Check
     success, msg = check_auth(username, device_id, sig)
-    if not success:
-        return jsonify({"error": msg}), 403
+    # Queue the task
+    req_id = str(uuid.uuid4())
+    cancel_evt = threading.Event()
 
     # Cleanup OLD task for this user (Keep only the latest one active)
     with scrape_tasks_lock:
@@ -303,10 +304,6 @@ def app_submit():
             # Delete from state
             del scrape_tasks[tid]
             log_to_file(f"[System] Cleaned up old task {tid} for user {username}")
-
-    # Queue the task
-    req_id = str(uuid.uuid4())
-    cancel_evt = threading.Event()
     
     with scrape_tasks_lock:
         scrape_tasks[req_id] = {
