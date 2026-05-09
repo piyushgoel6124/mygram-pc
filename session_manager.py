@@ -85,48 +85,63 @@ def mark_session_sleep(session_path):
     # REFILL the pool with a new session
     threading.Thread(target=initialize_browser_pool, daemon=True).start()
 
+_shared_browser = None # One process to rule them all (saves RAM)
+
 def initialize_browser_pool():
-    """Maintains exactly 5 persistent browser instances in RAM."""
-    global _pool_playwright, _browser_pool, _pool_initialized
+    """Maintains exactly 3 persistent contexts in ONE shared browser process."""
+    global _pool_playwright, _browser_pool, _pool_initialized, _shared_browser
     
+    # Emergency RAM Reset: If RAM > 90%, kill everything and start over
+    import psutil
+    if psutil.virtual_memory().percent > 90:
+        log_to_file(f"[Pool] EMERGENCY: RAM at {psutil.virtual_memory().percent}%. Clearing pool...")
+        with _pool_lock:
+            for s in list(_browser_pool.keys()):
+                close_pooled_browser(s)
+            if _shared_browser:
+                try: _shared_browser.close()
+                except: pass
+                _shared_browser = None
+
     with _pool_lock:
         if _pool_playwright is None:
             from playwright.sync_api import sync_playwright
             _pool_playwright = sync_playwright().start()
+        
+        if _shared_browser is None:
+            _shared_browser = _pool_playwright.chromium.launch(headless=True)
 
         all_sessions = get_all_sessions()
         now = time.time()
         load_session_status()
         
-        # 1. How many slots do we need to fill? (Reduced to 3 for stability)
+        # 1. Slot check
         current_count = len(_browser_pool)
-        needed = 4 - current_count
-        
-        if needed <= 0:
-            return
+        needed = 3 - current_count
+        if needed <= 0: return
 
-        # 2. Find sessions that aren't already in the pool and aren't sleeping
         ready = [s for s in all_sessions if s not in _browser_pool and now >= _session_stats.get(s, {}).get("sleep_until", 0)]
         target = ready[:needed]
         
         for s in target:
             try:
-                log_to_file(f"[Pool] Persistent Launch: {os.path.basename(s)}...")
-                browser = _pool_playwright.chromium.launch(headless=True)
-                context = browser.new_context(storage_state=s)
+                log_to_file(f"[Pool] Persistent Context: {os.path.basename(s)}...")
+                context = _shared_browser.new_context(storage_state=s)
                 page = context.new_page()
                 
-                # Performance: Block media
+                # Block heavy assets
                 page.route("**/*", lambda route: route.abort() if route.request.resource_type in ["image", "media", "font"] else route.continue_())
                 
-                # Warm up
-                page.goto("https://www.instagram.com/robots.txt", timeout=30000)
-                
-                _browser_pool[s] = {"browser": browser, "context": context, "page": page, "in_use": False}
+                _browser_pool[s] = {
+                    "page": page,
+                    "context": context,
+                    "in_use": False,
+                    "timestamp": time.time()
+                }
                 log_to_file(f"[Pool] SUCCESS: {os.path.basename(s)} is now WARM in RAM.")
                 time.sleep(2) # Sequential launch delay
             except Exception as e:
-                log_to_file(f"[Pool] Error launching {s}: {e}")
+                log_to_file(f"[Pool] Failed to launch {s}: {e}")
 
     if not _pool_initialized and _browser_pool:
         log_to_file("==================================================")
@@ -172,7 +187,8 @@ def ping_tunnel_from_pool():
                 try:
                     # 1. Stay on Instagram ROOT page (more natural)
                     log_to_file(f"[Heartbeat] {os.path.basename(path)} refreshing context...")
-                    data["page"].goto("https://www.instagram.com/", timeout=30000)
+                    # Faster: wait for domcontentloaded instead of full load
+                    data["page"].goto("https://www.instagram.com/", timeout=30000, wait_until="domcontentloaded")
                     
                     # 2. Background ping to tunnel
                     data["page"].evaluate(f"fetch('{ping_url}').catch(() => {{}})")
