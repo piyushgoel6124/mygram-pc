@@ -23,13 +23,9 @@ queue_lock = threading.Lock()
 scrape_lock = threading.Lock()
 
 def health_monitor_loop():
-    """Periodically checks health by having browsers ping the tunnel."""
-    import session_manager
-    from config import PUBLIC_URL
+    """Simplified health monitor (Browsers now ping via the Worker Thread)."""
     import requests
-    # Base ping URL
-    base_ping = f"{PUBLIC_URL.rstrip('/')}/ping" if PUBLIC_URL else "http://127.0.0.1:5030/ping"
-    
+    from config import PUBLIC_URL
     log_to_file("[Health Monitor] Started.")
     while True:
         try:
@@ -37,41 +33,18 @@ def health_monitor_loop():
             status = []
             
             flask_ok = False
+            try:
+                if requests.get("http://127.0.0.1:5030/ping?src=health_check", timeout=5).status_code == 200:
+                    flask_ok = True
+            except: pass
+            
             tunnel_ok = False
-            
-            # 1. Use Browsers to Ping Tunnel (Priority)
-            # Access session_manager._browser_pool directly to avoid stale references
-            with session_manager._pool_lock:
-                for path, data in session_manager._browser_pool.items():
-                    if not data["in_use"]:
-                        try:
-                            s_name = os.path.basename(path)
-                            labeled_ping = f"{base_ping}?src=browser_{s_name}"
-                            data["page"].goto(labeled_ping, timeout=15000, wait_until="commit")
-                            tunnel_ok = True
-                            flask_ok = True
-                        except Exception as e:
-                            # Print to console so we can see the real error
-                            print(f"[Heartbeat Error] {os.path.basename(path)}: {e}")
-                            log_to_file(f"[Heartbeat] {os.path.basename(path)} failed: {str(e)[:40]}", to_console=False)
-            
-            # 2. Local Fallback
-            if not flask_ok:
+            if PUBLIC_URL:
                 try:
-                    fallback_url = "http://127.0.0.1:5030/ping?src=system_fallback"
-                    if requests.get(fallback_url, timeout=5).status_code == 200:
-                        flask_ok = True
-                except: pass
-            
-            # 3. Tunnel Fallback
-            if not tunnel_ok and PUBLIC_URL:
-                try:
-                    fallback_url = f"{PUBLIC_URL.rstrip('/')}/ping?src=tunnel_fallback"
-                    if requests.get(fallback_url, timeout=5).status_code == 200:
+                    if requests.get(f"{PUBLIC_URL}/ping?src=health_check", timeout=5).status_code == 200:
                         tunnel_ok = True
-                        flask_ok = True
                 except: pass
-            
+
             status.append(f"FLASK: {'OK' if flask_ok else 'ERR'}")
             status.append(f"TUNNEL: {'OK' if tunnel_ok else 'ERR'}")
             status.append(f"WORKER: {'OK' if any(t.name == 'ScraperWorker' and t.is_alive() for t in threading.enumerate()) else 'STOPPED'}")
@@ -98,7 +71,11 @@ def worker_loop():
         if target_id:
             run_background_scrape(target_id)
         else:
-            time.sleep(5)
+            # When idle, perform browser heartbeats to keep them warm
+            from session_manager import perform_heartbeat
+            try: perform_heartbeat()
+            except: pass
+            time.sleep(10)
 
 def run_background_scrape(session_id):
     with scrape_tasks_lock:

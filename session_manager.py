@@ -156,22 +156,26 @@ def close_pooled_browser(path):
             except: pass
             del _browser_pool[path]
 
-def start_pool_heartbeat():
-    """Periodically pings the tunnel from each browser to keep them warm."""
+def perform_heartbeat():
+    """Pings the tunnel from each idle browser. Must be called from the worker thread."""
     from config import PUBLIC_URL
-    ping_url = f"{PUBLIC_URL.rstrip('/')}/ping" if PUBLIC_URL else "http://localhost:5030/ping"
+    base_ping = f"{PUBLIC_URL.rstrip('/')}/ping" if PUBLIC_URL else "http://127.0.0.1:5030/ping"
     
-    while True:
-        time.sleep(120) # Ping every 2 minutes
-        with _pool_lock:
-            for path, data in _browser_pool.items():
-                if not data["in_use"]:
-                    try:
-                        # Log it to verify it's working
-                        log_to_file(f"[Heartbeat] {os.path.basename(path)} pinging tunnel...")
-                        data["page"].goto(ping_url, timeout=30000)
-                    except Exception as e:
-                        log_to_file(f"[Heartbeat] Error for {os.path.basename(path)}: {e}")
+    with _pool_lock:
+        for path, data in _browser_pool.items():
+            if not data["in_use"]:
+                try:
+                    s_name = os.path.basename(path)
+                    labeled_ping = f"{base_ping}?src=browser_{s_name}"
+                    # Fast ping
+                    data["page"].goto(labeled_ping, timeout=15000, wait_until="commit")
+                except Exception as e:
+                    log_to_file(f"[Heartbeat] {os.path.basename(path)} failed: {e}", to_console=False)
+
+def get_pool_health():
+    """Returns whether any browser recently succeeded in a ping."""
+    # This is a placeholder - for now we'll rely on the logs to see the 'src=browser' pings
+    return True
 
 def release_pooled_browser(path):
     with _pool_lock:
