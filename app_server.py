@@ -463,8 +463,12 @@ def app_stream():
                 
                 # 3. Break if finished (Match app logic line 291)
                 if task["status"] in ["completed", "error", "cancelled"]:
+                    # Ensure the app gets the final status before we close
+                    yield f"event: status\ndata: {task['status']}\n\n"
+                    
                     if task["status"] == "completed":
                         yield f"event: complete\ndata: {req_id}\n\n"
+                    
                     # Aggressively signal termination to stop app polling
                     yield "data: __FINISHED__\n\n"
                     break
