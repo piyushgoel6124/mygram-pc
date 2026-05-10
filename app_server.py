@@ -128,13 +128,25 @@ def run_background_scrape(session_id):
                 if not os.path.exists(upload_path):
                     raise Exception("Uploaded file not found")
                 
-                try:
-                    with open(upload_path, "r", encoding="utf-8") as f:
-                        content = f.read().splitlines()
-                except UnicodeDecodeError:
-                    # Fallback for Excel/Windows-encoded CSVs
-                    with open(upload_path, "r", encoding="latin-1") as f:
-                        content = f.read().splitlines()
+                content = []
+                if upload_path.lower().endswith(".xlsx"):
+                    # Use pandas to read binary Excel files
+                    try:
+                        import pandas as pd
+                        df = pd.read_excel(upload_path)
+                        # Flatten all columns into a single list of strings
+                        for col in df.columns:
+                            content.extend(df[col].astype(str).tolist())
+                    except Exception as ex:
+                        task["logs"].append(f"[ERROR] Failed to parse Excel: {ex}. Make sure 'pandas' and 'openpyxl' are installed.")
+                else:
+                    # Handle CSV/TXT as text
+                    try:
+                        with open(upload_path, "r", encoding="utf-8") as f:
+                            content = f.read().splitlines()
+                    except UnicodeDecodeError:
+                        with open(upload_path, "r", encoding="latin-1") as f:
+                            content = f.read().splitlines()
                 
                 links = [line.strip() for line in content if "instagram.com" in line]
                 
