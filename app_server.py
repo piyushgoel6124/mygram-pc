@@ -130,21 +130,22 @@ def run_background_scrape(session_id):
                 
                 content = []
                 if upload_path.lower().endswith(".xlsx"):
-                    # Use pandas to read binary Excel files
                     try:
                         import pandas as pd
                         df = pd.read_excel(upload_path)
-                        # 1. Include Column Names (in case first URL is treated as a header)
+                        rows, cols = df.shape
+                        debug_msg = f"[BULK] Excel Stats: {rows} rows, {cols} columns detected."
+                        log_to_file(debug_msg)
+                        task["logs"].append(debug_msg)
+                        
+                        # 1. Include Column Names
                         content.extend([str(c) for c in df.columns])
                         # 2. Include all row data
                         for col in df.columns:
                             content.extend(df[col].astype(str).tolist())
-                        
-                        task["logs"].append(f"[BULK] Scanned Excel file: {len(content)} total cells found.")
                     except Exception as ex:
-                        task["logs"].append(f"[ERROR] Failed to parse Excel: {ex}. Make sure 'pandas' and 'openpyxl' are installed.")
+                        task["logs"].append(f"[ERROR] Failed to parse Excel: {ex}")
                 else:
-                    # Handle CSV/TXT as text
                     try:
                         with open(upload_path, "r", encoding="utf-8") as f:
                             content = f.read().splitlines()
@@ -152,7 +153,7 @@ def run_background_scrape(session_id):
                         with open(upload_path, "r", encoding="latin-1") as f:
                             content = f.read().splitlines()
                 
-                # Robust Regex to find Instagram Reel/Post URLs hidden anywhere in the text
+                # Robust Regex extraction
                 import re
                 url_pattern = r'https?://(?:www\.)?instagram\.com/(?:reels?|p)/[a-zA-Z0-9_\-]+/?'
                 
@@ -161,10 +162,13 @@ def run_background_scrape(session_id):
                     found = re.findall(url_pattern, str(line))
                     raw_links.extend(found)
                 
-                # Remove duplicates while preserving order
                 links = list(dict.fromkeys(raw_links))
+                final_msg = f"[BULK] Found {len(links)} unique URLs among {len(content)} total data points."
+                log_to_file(final_msg)
+                task["logs"].append(final_msg)
                 
-                task["logs"].append(f"[BULK] Found {len(links)} links. Starting...")
+                if len(links) == 0 and len(content) > 0:
+                    log_to_file(f"[DEBUG] First 5 cells: {content[:5]}")
                 
                 for i, link in enumerate(links):
                     if cancel_evt.is_set(): break
