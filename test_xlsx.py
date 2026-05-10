@@ -36,13 +36,87 @@ def test_excel_direct():
     print(f"Found {len(links)} links in Excel file.")
     
     if links:
-        print("Starting direct scrape of first 2 links as a test...")
-        results = scrape_multiple_urls(links[:2])
-        print(f"Test Finished. Collected {len(results)} reels.")
+        print(f"Submitting {test_file} to local server API...")
         
-        import json
-        print("\n--- Scraped Data Sample ---")
-        print(json.dumps(results, indent=4))
+        import requests
+        import hashlib
+        
+        # Test Credentials (Matching your users.json)
+        username = "piyush"
+        password = "12345"
+        device_id = "4c3f62d3727795b1"
+        api_secret = "MyGram_Security_Key_2026" # From config.py
+        
+        # Generate signature exactly like the app
+        sig_data = f"{username}{device_id}{api_secret}"
+        sig = hashlib.md5(sig_data.encode()).hexdigest()
+        
+        url = "http://localhost:5030/upload"
+        
+        files = {'file': open(test_file, 'rb')}
+        data = {
+            'username': username,
+            'password': password,
+            'device_id': device_id,
+            'sig': sig
+        }
+        
+        try:
+            print(f"Sending request to {url}...")
+            response = requests.post(url, data=data, files=files)
+            print(f"Status Code: {response.status_code}")
+            print("Server Response:")
+            print(response.text)
+            
+            if response.status_code == 200:
+                print("\n[SUCCESS] Server accepted the Excel file!")
+                res_data = response.json()
+                req_id = res_data.get("request_id")
+                
+                print(f"\n--- Monitoring Progress (Request ID: {req_id}) ---")
+                
+                # Poll the stream for logs
+                stream_url = f"http://localhost:5030/stream?id={req_id}&username={username}&device_id={device_id}&sig={sig}"
+                
+                import time
+                finished = False
+                while not finished:
+                    try:
+                        s_res = requests.get(stream_url, timeout=10)
+                        lines = s_res.text.strip().split("\n")
+                        for line in lines:
+                            if "data:" in line:
+                                log_msg = line.replace("data:", "").strip()
+                                if log_msg == "__FINISHED__":
+                                    finished = True
+                                    print("\n[FINISH] Scraper signaled completion.")
+                                    break
+                                elif log_msg:
+                                    print(f"Server Log: {log_msg}")
+                    except Exception as stream_err:
+                        # Stream might timeout during long scrolls, just retry
+                        pass
+                    
+                    if not finished:
+                        time.sleep(2)
+
+                # Download the result
+                print("\nDownloading result CSV...")
+                dl_url = f"http://localhost:5030/download/{req_id}"
+                dl_res = requests.get(dl_url)
+                
+                if dl_res.status_code == 200:
+                    filename = f"bulk_result_{req_id[:8]}.csv"
+                    with open(filename, "wb") as f:
+                        f.write(dl_res.content)
+                    print(f"[DONE] File saved as: {filename}")
+                else:
+                    print(f"[ERROR] Could not download file. Status: {dl_res.status_code}")
+
+            else:
+                print("\n[FAILED] Server rejected the request. Check logs for details.")
+        except Exception as e:
+            print(f"[ERROR] Could not connect to server: {e}")
 
 if __name__ == "__main__":
     test_excel_direct()

@@ -15,6 +15,8 @@ from auth_utils import load_users, save_users, check_auth, update_user_stats
 from scraper_engine import scrape_since_reel
 
 app = Flask(__name__)
+SHOW_BULK_DEBUG_LOGS = False  # Set to True to see technical batch logs in the app
+USE_CLOUDFLARED = True      # Set to False to disable the Cloudflare tunnel
 
 # Global Task State
 TASKS_FILE = "persistent_tasks.json"
@@ -133,34 +135,65 @@ def run_background_scrape(session_id):
             final_username = None
             
             if task_type == "BULK":
-                # Handle Bulk Upload (Match old code lines 1650-1695)
-                upload_path = os.path.join(OUTPUTS_DIR, f"upload_{session_id}.csv")
+                # Handle Bulk Upload (Check both .xlsx and .csv)
+                xlsx_path = os.path.join(OUTPUTS_DIR, f"upload_{session_id}.xlsx")
+                csv_path = os.path.join(OUTPUTS_DIR, f"upload_{session_id}.csv")
+                upload_path = xlsx_path if os.path.exists(xlsx_path) else csv_path
+                
                 if not os.path.exists(upload_path):
-                    raise Exception("Uploaded file not found")
+                    raise Exception(f"Uploaded file not found (tried .xlsx and .csv)")
                 
                 # Extraction Logic based on file type
                 content = []
+                if SHOW_BULK_DEBUG_LOGS:
+                    task["logs"].append(f"[DEBUG] Analyzing file: {os.path.basename(upload_path)}")
+                
                 if upload_path.lower().endswith(".xlsx"):
                     try:
                         import openpyxl
                         wb = openpyxl.load_workbook(upload_path, data_only=True)
+                        if SHOW_BULK_DEBUG_LOGS:
+                            task["logs"].append(f"[DEBUG] Excel Sheets: {wb.sheetnames}")
                         for sheet in wb.worksheets:
                             for row in sheet.iter_rows(values_only=True):
                                 for cell in row:
-                                    if cell and isinstance(cell, str): content.append(cell)
+                                    if cell and isinstance(cell, str): 
+                                        content.append(cell)
+                        if SHOW_BULK_DEBUG_LOGS:
+                            task["logs"].append(f"[DEBUG] Raw items extracted from Excel: {len(content)}")
                     except ImportError:
-                        task["logs"].append("Error: 'openpyxl' library not found. Please install it on the server to use .xlsx files.")
+                        task["logs"].append("Error: 'openpyxl' library not found.")
                     except Exception as e:
-                        task["logs"].append(f"Excel Error: {e}")
+                        if SHOW_BULK_DEBUG_LOGS:
+                            task["logs"].append(f"[DEBUG] Excel Error: {e}")
                 else:
                     try:
                         with open(upload_path, "r", encoding="utf-8") as f:
                             content = f.read().splitlines()
+                        if SHOW_BULK_DEBUG_LOGS:
+                            task["logs"].append(f"[DEBUG] Text lines extracted: {len(content)}")
                     except UnicodeDecodeError:
                         with open(upload_path, "r", encoding="latin-1") as f:
                             content = f.read().splitlines()
+                        if SHOW_BULK_DEBUG_LOGS:
+                            task["logs"].append(f"[DEBUG] Latin-1 lines extracted: {len(content)}")
                 
-                links = [line.strip() for line in content if isinstance(line, str) and "instagram.com" in line]
+                # Aggressive link extraction
+                links = []
+                for item in content:
+                    if not isinstance(item, str): continue
+                    cleaned = item.strip()
+                    if "instagram.com" in cleaned.lower():
+                        # Extract the actual URL part in case there is text around it
+                        import re
+                        match = re.search(r'(https?://[^\s]+)', cleaned)
+                        if match:
+                            links.append(match.group(1))
+                        else:
+                            links.append(cleaned)
+                
+                # Deduplicate
+                links = list(dict.fromkeys(links))
                 
                 task["logs"].append(f"[BULK] Found {len(links)} links. Starting direct scrape...")
                 
@@ -375,7 +408,9 @@ def app_upload():
         return jsonify({"error": "No file selected"}), 400
 
     req_id = str(uuid.uuid4())
-    filepath = os.path.join(OUTPUTS_DIR, f"upload_{req_id}.csv")
+    # Preserving the correct extension (.xlsx or .csv)
+    ext = os.path.splitext(file.filename)[1].lower() or ".csv"
+    filepath = os.path.join(OUTPUTS_DIR, f"upload_{req_id}{ext}")
     file.save(filepath)
     
     # Create task (Matching old logic)
@@ -528,10 +563,14 @@ def start_cloudflared_tunnel():
                 )
                 
                 with open("tunnel.log", "a", encoding="utf-8") as tlog:
+                    from datetime import datetime, timedelta
                     for line in iter(process.stdout.readline, ''):
                         if line:
-                            tlog.write(line)
-                            tlog.flush() # Force write to disk immediately
+                            # Prepend IST timestamp to the Cloudflare output
+                            ist_now = datetime.utcnow() + timedelta(hours=5, minutes=30)
+                            ts = ist_now.strftime("[%Y-%m-%d %H:%M:%S]")
+                            tlog.write(f"{ts} {line}")
+                            tlog.flush()
                 
                 process.wait()
             except Exception as e:
@@ -562,8 +601,12 @@ def start_server():
             except: pass
             time.sleep(1)
         
-        log_to_file("[System] --- Phase 2: Launching Cloudflare Tunnel ---")
-        start_cloudflared_tunnel()
+        # Phase 2: Tunnel (Only if enabled)
+        if USE_CLOUDFLARED:
+            log_to_file(f"[System] --- Phase 2: Launching Cloudflare Tunnel ---")
+            start_cloudflared_tunnel()
+        else:
+            log_to_file("[System] --- Phase 2: Tunnel Disabled by User ---")
 
         log_to_file("[System] --- Phase 3: Waiting for Public URL to go Online ---")
         from config import PUBLIC_URL

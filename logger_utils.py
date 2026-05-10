@@ -2,7 +2,7 @@ import threading
 import queue
 import time
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from config import LOG_FILE
 
 _log_queue = queue.Queue()
@@ -41,7 +41,9 @@ def _logging_worker():
             
             new_lines = []
             for message, to_console in batch:
-                timestamp = datetime.now().strftime("[%Y-%m-%d %H:%M:%S]")
+                # Force IST (UTC + 5:30)
+                ist_now = datetime.utcnow() + timedelta(hours=5, minutes=30)
+                timestamp = ist_now.strftime("[%Y-%m-%d %H:%M:%S]")
                 full_msg = f"{timestamp} {message}"
                 
                 # IMPORTANT: Use original stdout here to prevent recursion
