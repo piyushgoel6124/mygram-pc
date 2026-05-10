@@ -280,7 +280,7 @@ def scrape_multiple_urls(urls, logger=None, cancel_event=None):
         
         # Step 3: Fetch in Batches
         enriched_data = []
-        chunk_size = 50 # Matching single-scrape batch size
+        chunk_size = 100 # Matching single-scrape batch size
         
         # Warm up session
         page.goto("https://www.instagram.com/", wait_until="domcontentloaded", timeout=60000)
