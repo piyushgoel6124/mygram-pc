@@ -175,17 +175,10 @@ def run_background_scrape(session_id):
                 if len(links) == 0 and len(content) > 0:
                     log_to_file(f"[DEBUG] First 5 cells: {content[:5]}")
                 
-                for i, link in enumerate(links):
-                    if cancel_evt.is_set(): break
-                    task["logs"].append(f"[BULK] Processing {i+1}/{len(links)}: {link}")
-                    res, uname = scrape_since_reel(link, logger=lambda m: task["logs"].append(m), cancel_event=cancel_evt)
-                    if res:
-                        all_results.extend(res)
-                        final_username = uname
-                    time.sleep(2) # Prevent rate limits between bulk items
-                
-                results = all_results
-                username = final_username or "bulk_user"
+                # HIGH-SPEED BULK MODE (One browser, batched fetches)
+                from scraper_engine import scrape_bulk_reels
+                results = scrape_bulk_reels(links, logger=lambda m: task["logs"].append(m), cancel_event=cancel_evt)
+                username = "bulk_results" # Placeholder for bulk
             else:
                 # Normal Single Scrape
                 results, username = scrape_since_reel(reel_url, logger=lambda m: task["logs"].append(m), cancel_event=cancel_evt)

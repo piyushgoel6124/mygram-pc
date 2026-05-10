@@ -192,6 +192,132 @@ def scrape_since_reel(reel_url, logger=None, cancel_event=None, auth_info=None):
             if browser: browser.close()
             if playwright: playwright.stop()
         except: pass
+
+def scrape_bulk_reels(urls, logger=None, cancel_event=None):
+    """
+    EXACT OLD VERSION: Takes a list of URLs and scrapes their data using batched GraphQL.
+    """
+    def is_cancelled():
+        if cancel_event and cancel_event.is_set(): return True
+        return False
+    
+    def log(msg):
+        if logger: logger(msg)
+
+    if not urls: return []
+
+    # Extract shortcodes
+    shortcodes = []
+    for url in urls:
+        match = re.search(r'/(?:reels?|p)/([^/?#&]+)', url)
+        if match: shortcodes.append(match.group(1))
+    
+    if not shortcodes: return []
+
+    seen = set()
+    unique_scs = []
+    for sc in shortcodes:
+        if sc not in seen:
+            seen.add(sc)
+            unique_scs.append(sc)
+
+    playwright = None
+    browser = None
+    try:
+        from session_manager import get_next_session_with_status
+        current_session = get_next_session_with_status()[0]
+        
+        playwright = sync_playwright().start()
+        log(f"Launching browser to scrape {len(unique_scs)} URLs using session: {os.path.basename(current_session)}")
+        
+        browser = playwright.chromium.launch(headless=True)
+        context = browser.new_context(storage_state=current_session)
+
+        def block_media(route):
+            if route.request.resource_type in ["image", "media", "font"]:
+                route.abort()
+            else:
+                route.continue_()
+        
+        page = context.new_page()
+        page.route("**/*", block_media)
+        
+        # Step 3: Fetch in Batches
+        enriched_data = []
+        chunk_size = 100
+        
+        # Quick session activation
+        page.goto("https://www.instagram.com")
+        
+        for i in range(0, len(unique_scs), chunk_size):
+            if is_cancelled():
+                log("CANCELLATION: Stop requested. Aborting bulk scrape.")
+                break
+
+            chunk = unique_scs[i:i + chunk_size]
+            log(f"Fetching batch {i//chunk_size + 1} ({len(chunk)} reels)...")
+            
+            batch_results = page.evaluate("""
+                async (shortcodes) => {
+                    const csrf = document.cookie.split('; ').find(row => row.startsWith('csrftoken='))?.split('=')[1] || "";
+                    const fetchOne = async (sc) => {
+                        try {
+                            const res = await fetch("https://www.instagram.com/graphql/query", {
+                                method: "POST",
+                                headers: {
+                                    "Content-Type": "application/x-www-form-urlencoded",
+                                    "X-CSRFToken": csrf,
+                                    "X-Instagram-AJAX": "1",
+                                    "X-Requested-With": "XMLHttpRequest",
+                                    "X-IG-App-ID": "936619743392459",
+                                    "X-ASBD-ID": "129477"
+                                },
+                                body: new URLSearchParams({ 
+                                    variables: JSON.stringify({ shortcode: sc }), 
+                                    doc_id: "8845758582119845" 
+                                }).toString(),
+                            });
+                            const json = await res.json();
+                            const m = json?.data?.xdt_shortcode_media;
+                            if (!m) return { shortcode: sc, error: "No data" };
+                            const views = m.video_view_count || 0;
+                            const plays = m.video_play_count || 0;
+                            const hook_percentage = plays > 0 ? ((views / plays) * 100).toFixed(2) : "0.00";
+                            return {
+                                shortcode: m.shortcode,
+                                author: m.owner?.username,
+                                likes: m.edge_media_preview_like?.count || m.edge_liked_by?.count || 0,
+                                comments: m.edge_media_to_comment?.count || m.edge_media_to_parent_comment?.count || 0,
+                                views: views,
+                                plays: plays,
+                                hook_percentage: hook_percentage,
+                                text: m.edge_media_to_caption?.edges?.[0]?.node?.text || "",
+                                timestamp: m.taken_at_timestamp,
+                                date: m.taken_at_timestamp ? new Date(m.taken_at_timestamp * 1000).toISOString() : "",
+                                url: `https://www.instagram.com/reels/${m.shortcode}/`
+                            };
+                        } catch(e) { return { shortcode: sc, error: e.message }; }
+                    };
+                    return await Promise.all(shortcodes.map(sc => fetchOne(sc)));
+                }
+            """, chunk)
+            
+            enriched_data.extend(batch_results)
+
+            if i + chunk_size < len(unique_scs):
+                delay = random.uniform(0.5, 1.5)
+                log(f"Batch complete. Resting for {delay:.2f}s...")
+                time.sleep(delay)
+
+        return [d for d in enriched_data if "error" not in d]
+
+    except Exception as e:
+        log(f"Bulk Scrape failed: {e}")
+        return []
+    finally:
+        if browser: browser.close()
+        if playwright: playwright.stop()
+
 def scrape_reel(url):
     """CLI helper to scrape a single reel."""
     all_reels, username = scrape_since_reel(url)
