@@ -124,7 +124,12 @@ def run_background_scrape(session_id):
             
             if task_type == "BULK":
                 # Handle Bulk Upload (Match old code lines 1650-1695)
-                upload_path = os.path.join(OUTPUTS_DIR, f"upload_{session_id}.csv")
+                # Retrieve the actual path from the task object
+                upload_path = task.get("upload_path")
+                if not upload_path or not os.path.exists(upload_path):
+                    # Fallback for old tasks or unexpected errors
+                    upload_path = os.path.join(OUTPUTS_DIR, f"upload_{session_id}.csv")
+                
                 if not os.path.exists(upload_path):
                     raise Exception("Uploaded file not found")
                 
@@ -384,11 +389,12 @@ def app_upload():
     if file.filename == '':
         return jsonify({"error": "No file selected"}), 400
 
-    req_id = str(uuid.uuid4())
-    filepath = os.path.join(OUTPUTS_DIR, f"upload_{req_id}.csv")
+    # Detect original extension and save correctly
+    original_ext = file.filename.split('.')[-1] if '.' in file.filename else "csv"
+    filepath = os.path.join(OUTPUTS_DIR, f"upload_{req_id}.{original_ext}")
     file.save(filepath)
     
-    # Create task (Matching old logic)
+    # Create task
     cancel_event = threading.Event()
     with scrape_tasks_lock:
         scrape_tasks[req_id] = {
@@ -397,7 +403,8 @@ def app_upload():
             "username": username,
             "status": "queued",
             "event": cancel_event,
-            "logs": [f"[SYSTEM] CSV Uploaded: {file.filename}"]
+            "upload_path": filepath, # Store the actual path for the worker
+            "logs": [f"[SYSTEM] File Uploaded: {file.filename}"]
         }
     
     with queue_lock:
