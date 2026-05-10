@@ -273,10 +273,15 @@ def app_login():
     if not success:
         return jsonify({"error": msg}), 403
 
-    # (Simplified login check)
+    # (Simplified login check & Device Update)
     users = load_users()
     for u in users:
         if u["username"] == username and u["password"] == password:
+            # Update device_id on login (Fair switching)
+            if u.get("device_id") != device_id:
+                u["device_id"] = device_id
+                save_users(users)
+                log_to_file(f"[Auth] Updated device_id for {username} to {device_id}")
             return jsonify({"status": "success", "message": "Logged in"})
     
     return jsonify({"error": "Invalid username or password"}), 401

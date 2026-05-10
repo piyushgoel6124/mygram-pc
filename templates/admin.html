@@ -62,7 +62,6 @@
                     <tr>
                         <th class="px-8 py-5 text-xs font-black uppercase tracking-widest text-teal-800">User Identity</th>
                         <th class="px-8 py-5 text-xs font-black uppercase tracking-widest text-teal-800">Usage Stats</th>
-                        <th class="px-8 py-5 text-xs font-black uppercase tracking-widest text-teal-800">Credits</th>
                         <th class="px-8 py-5 text-xs font-black uppercase tracking-widest text-teal-800">Password</th>
                         <th class="px-8 py-5 text-xs font-black uppercase tracking-widest text-teal-800">Device Lock</th>
                         <th class="px-8 py-5 text-xs font-black uppercase tracking-widest text-teal-800">Validity Period</th>
@@ -93,10 +92,6 @@
                 <div>
                     <label class="block text-xs font-bold text-teal-700 mb-2 uppercase">Expiry Date (YYYY-MM-DD HH:MM:SS)</label>
                     <input type="text" id="valid_till" value="2026-12-31 23:59:59" class="w-full px-4 py-3 rounded-xl focus:ring-teal-500 shadow-sm">
-                </div>
-                <div>
-                    <label class="block text-xs font-bold text-teal-700 mb-2 uppercase text-xs">Remaining Credits</label>
-                    <input type="number" id="credits" value="0" class="w-full px-4 py-3 rounded-xl focus:ring-teal-500 shadow-sm">
                 </div>
                 <div>
                     <label class="block text-xs font-bold text-teal-700 mb-2 uppercase text-xs">Assigned Device ID</label>
@@ -175,9 +170,6 @@
                         <div class="text-xs font-bold text-teal-800">${u.requested_links || 0} Links</div>
                         <div class="text-[10px] text-teal-500">${u.files_generated || 0} Files | ${u.total_rows_scraped || 0} Rows</div>
                     </td>
-                    <td class="px-8 py-5">
-                        <div class="text-sm font-black text-teal-900">${u.credits || 0} CR</div>
-                    </td>
                     <td class="px-8 py-5 text-sm font-mono text-teal-600">${u.password}</td>
                     <td class="px-8 py-5">
                         <span class="text-xs font-mono ${u.device_id ? 'text-indigo-600' : 'text-slate-400'}">
@@ -220,7 +212,6 @@
             document.getElementById('username').disabled = true;
             document.getElementById('password').value = user.password;
             document.getElementById('valid_till').value = user.valid_till;
-            document.getElementById('credits').value = user.credits || 0;
             document.getElementById('device_id').value = user.device_id || "";
             document.getElementById('user-modal').classList.remove('hidden');
         }
@@ -234,7 +225,6 @@
                 username: document.getElementById('username').value,
                 password: document.getElementById('password').value,
                 valid_till: document.getElementById('valid_till').value,
-                credits: parseInt(document.getElementById('credits').value) || 0,
                 device_id: document.getElementById('device_id').value || null
             };
 
