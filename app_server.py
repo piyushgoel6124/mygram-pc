@@ -128,10 +128,15 @@ def run_background_scrape(session_id):
                 if not os.path.exists(upload_path):
                     raise Exception("Uploaded file not found")
                 
-                with open(upload_path, "r", encoding="utf-8") as f:
-                    # Support multiple formats (one per line, or CSV with 'url' column)
-                    content = f.read().splitlines()
-                    links = [line.strip() for line in content if "instagram.com" in line]
+                try:
+                    with open(upload_path, "r", encoding="utf-8") as f:
+                        content = f.read().splitlines()
+                except UnicodeDecodeError:
+                    # Fallback for Excel/Windows-encoded CSVs
+                    with open(upload_path, "r", encoding="latin-1") as f:
+                        content = f.read().splitlines()
+                
+                links = [line.strip() for line in content if "instagram.com" in line]
                 
                 task["logs"].append(f"[BULK] Found {len(links)} links. Starting...")
                 

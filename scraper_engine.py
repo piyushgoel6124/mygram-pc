@@ -95,7 +95,7 @@ def scrape_since_reel(reel_url, logger=None, cancel_event=None, auth_info=None):
         scanned_shortcodes = set() # Start empty so we don't ignore the target reel
         last_new_reel_time = time.time()
 
-        for scroll_idx in range(1, 46): 
+        for scroll_idx in range(1, 500): 
             if is_cancelled(): break
             
             # Extract visible reels
@@ -113,7 +113,7 @@ def scrape_since_reel(reel_url, logger=None, cancel_event=None, auth_info=None):
                     log("Loading paused or end of profile reached. Finishing scrape.")
                     break
                 page.mouse.wheel(0, 2000)
-                page.wait_for_timeout(1000)
+                page.wait_for_timeout(1600)
                 continue
             
             # Reset stall timer
@@ -139,7 +139,9 @@ def scrape_since_reel(reel_url, logger=None, cancel_event=None, auth_info=None):
                                 const v = m.video_view_count || 0;
                                 const p = m.video_play_count || 0;
                                 return {
-                                    shortcode: m.shortcode, author: m.owner?.username,
+                                    shortcode: m.shortcode,
+                                    url: `https://www.instagram.com/reel/${m.shortcode}/`,
+                                    author: m.owner?.username,
                                     likes: m.edge_media_preview_like?.count || m.edge_liked_by?.count || 0,
                                     comments: m.edge_media_to_parent_comment?.count || 0,
                                     views: v, plays: p,
@@ -172,7 +174,7 @@ def scrape_since_reel(reel_url, logger=None, cancel_event=None, auth_info=None):
 
             if found_target: break
             page.mouse.wheel(0, 3000)
-            page.wait_for_timeout(1000)
+            page.wait_for_timeout(1600)
         
         log(f"Scrape finished. Total reels: {len(all_reels)}")
         return all_reels, username
