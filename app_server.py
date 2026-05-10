@@ -389,6 +389,7 @@ def app_upload():
     if file.filename == '':
         return jsonify({"error": "No file selected"}), 400
 
+    req_id = str(uuid.uuid4())
     # Detect original extension and save correctly
     original_ext = file.filename.split('.')[-1] if '.' in file.filename else "csv"
     filepath = os.path.join(OUTPUTS_DIR, f"upload_{req_id}.{original_ext}")
@@ -403,7 +404,7 @@ def app_upload():
             "username": username,
             "status": "queued",
             "event": cancel_event,
-            "upload_path": filepath, # Store the actual path for the worker
+            "upload_path": filepath, 
             "logs": [f"[SYSTEM] File Uploaded: {file.filename}"]
         }
     
