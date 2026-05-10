@@ -70,7 +70,9 @@ def health_monitor_loop():
             except:
                 status.append("FLASK: UNREACHABLE")
 
-            # 2. Check Public Tunnel Reachability
+            # 2. Check Tunnel Status (Process + Public URL)
+            tunnel_proc_ok = any("cloudflared" in (p.info['name'] or "").lower() for p in psutil.process_iter(['name']))
+            
             try:
                 from config import PUBLIC_URL
                 res_pub = requests.get(f"{PUBLIC_URL}/ping", timeout=8)
@@ -79,7 +81,15 @@ def health_monitor_loop():
                 else:
                     status.append("TUNNEL: LINK_ERROR")
             except:
-                status.append("TUNNEL: OFFLINE")
+                if tunnel_proc_ok:
+                    status.append("TUNNEL: STALLED (Restarting...)")
+                    # Auto-Fix: Kill the zombie process so it can restart
+                    for p in psutil.process_iter(['name']):
+                        if "cloudflared" in (p.info['name'] or "").lower():
+                            try: p.terminate()
+                            except: pass
+                else:
+                    status.append("TUNNEL: OFFLINE")
 
             # 3. Check Worker Thread
             # (Simple check: is the thread alive)
@@ -492,30 +502,40 @@ def start_cloudflared_tunnel():
     def run_tunnel():
         import subprocess
         import shutil
+        import time
         
-        # Check if cloudflared exists
-        if not shutil.which("cloudflared"):
-            log_to_file("[Cloudflare Error] 'cloudflared' command not found. Please install it or add it to PATH.")
-            return
-
-        log_to_file("[Cloudflare] Starting tunnel with full logging to tunnel.log...")
-        try:
-            # Command for permanent named tunnel with full logging HTTP2 protocol
-            cmd = [
-                "cloudflared", "tunnel", "--protocol", "http2", "--ha-connections", "1",
-                "--loglevel", "info", "--logfile", "tunnel.log",
-                "--url", "http://localhost:5030", "run", "f637317c-9221-477c-ab6b-efadd6e8bf0a"
-            ]
-            process = subprocess.Popen(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, 
-                text=True, bufsize=1, universal_newlines=True
-            )
-            for line in iter(process.stdout.readline, ''):
-                if line.strip():
-                    log_to_file(f"[Cloudflare] {line.strip()}", to_console=False)
-        except Exception as e:
-            log_to_file(f"[Cloudflare Error] Could not start tunnel: {e}")
-            log_to_file("[System] Tunnel failed, but server is running locally at http://localhost:5030")
+        while True:
+            # Check if cloudflared exists
+            if not shutil.which("cloudflared"):
+                log_to_file("[Cloudflare Error] 'cloudflared' command not found. Waiting 60s...")
+                time.sleep(60)
+                continue
+    
+            log_to_file("[Cloudflare] Starting tunnel...")
+            try:
+                # Command for permanent named tunnel with improved resilience
+                cmd = [
+                    "cloudflared", "tunnel", "--ha-connections", "1",
+                    "--heartbeat-interval", "30s", "--heartbeat-count", "5",
+                    "--loglevel", "info", "--logfile", "tunnel.log",
+                    "--origin-ca-pool", r"C:\Users\Administrator\.cloudflared\cert.pem",
+                    "--url", "http://localhost:5030", "run", "f637317c-9221-477c-ab6b-efadd6e8bf0a"
+                ]
+                process = subprocess.Popen(
+                    cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, 
+                    text=True, bufsize=1, universal_newlines=True
+                )
+                for line in iter(process.stdout.readline, ''):
+                    if line.strip():
+                        log_to_file(f"[Cloudflare] {line.strip()}", to_console=False)
+                
+                # If the loop finishes, the process died
+                process.wait()
+            except Exception as e:
+                log_to_file(f"[Cloudflare Error] Tunnel crashed: {e}")
+            
+            log_to_file("[Cloudflare] Tunnel connection lost. Restarting in 5s...")
+            time.sleep(5)
 
     threading.Thread(target=run_tunnel, daemon=True).start()
 
