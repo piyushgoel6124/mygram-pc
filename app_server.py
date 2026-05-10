@@ -134,9 +134,13 @@ def run_background_scrape(session_id):
                     try:
                         import pandas as pd
                         df = pd.read_excel(upload_path)
-                        # Flatten all columns into a single list of strings
+                        # 1. Include Column Names (in case first URL is treated as a header)
+                        content.extend([str(c) for c in df.columns])
+                        # 2. Include all row data
                         for col in df.columns:
                             content.extend(df[col].astype(str).tolist())
+                        
+                        task["logs"].append(f"[BULK] Scanned Excel file: {len(content)} total cells found.")
                     except Exception as ex:
                         task["logs"].append(f"[ERROR] Failed to parse Excel: {ex}. Make sure 'pandas' and 'openpyxl' are installed.")
                 else:
@@ -148,7 +152,17 @@ def run_background_scrape(session_id):
                         with open(upload_path, "r", encoding="latin-1") as f:
                             content = f.read().splitlines()
                 
-                links = [line.strip() for line in content if "instagram.com" in line]
+                # Robust Regex to find Instagram Reel/Post URLs hidden anywhere in the text
+                import re
+                url_pattern = r'https?://(?:www\.)?instagram\.com/(?:reels?|p)/[a-zA-Z0-9_\-]+/?'
+                
+                raw_links = []
+                for line in content:
+                    found = re.findall(url_pattern, str(line))
+                    raw_links.extend(found)
+                
+                # Remove duplicates while preserving order
+                links = list(dict.fromkeys(raw_links))
                 
                 task["logs"].append(f"[BULK] Found {len(links)} links. Starting...")
                 
