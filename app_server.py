@@ -513,23 +513,15 @@ def start_cloudflared_tunnel():
     
             log_to_file("[Cloudflare] Starting tunnel...")
             try:
-                # Command for permanent named tunnel with improved resilience
+                # Command for permanent named tunnel forced to HTTP2 (More stable on this network)
                 cmd = [
-                    "cloudflared", "tunnel", "--ha-connections", "1",
+                    "cloudflared", "tunnel", "--protocol", "http2", "--ha-connections", "1",
                     "--heartbeat-interval", "30s", "--heartbeat-count", "5",
                     "--loglevel", "info", "--logfile", "tunnel.log",
                     "--origin-ca-pool", r"C:\Users\Administrator\.cloudflared\cert.pem",
                     "--url", "http://localhost:5030", "run", "f637317c-9221-477c-ab6b-efadd6e8bf0a"
                 ]
-                process = subprocess.Popen(
-                    cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, 
-                    text=True, bufsize=1, universal_newlines=True
-                )
-                for line in iter(process.stdout.readline, ''):
-                    if line.strip():
-                        log_to_file(f"[Cloudflare] {line.strip()}", to_console=False)
-                
-                # If the loop finishes, the process died
+                process = subprocess.Popen(cmd)
                 process.wait()
             except Exception as e:
                 log_to_file(f"[Cloudflare Error] Tunnel crashed: {e}")
