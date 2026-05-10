@@ -124,32 +124,24 @@ def run_background_scrape(session_id):
             
             if task_type == "BULK":
                 # Handle Bulk Upload (Match old code lines 1650-1695)
-                # Retrieve the actual path from the task object
-                upload_path = task.get("upload_path")
-                if not upload_path or not os.path.exists(upload_path):
-                    # Fallback for old tasks or unexpected errors
-                    upload_path = os.path.join(OUTPUTS_DIR, f"upload_{session_id}.csv")
-                
+                upload_path = os.path.join(OUTPUTS_DIR, f"upload_{session_id}.csv")
                 if not os.path.exists(upload_path):
                     raise Exception("Uploaded file not found")
                 
+                # Extraction Logic based on file type
                 content = []
                 if upload_path.lower().endswith(".xlsx"):
                     try:
-                        import pandas as pd
-                        df = pd.read_excel(upload_path)
-                        rows, cols = df.shape
-                        debug_msg = f"[BULK] Excel Stats: {rows} rows, {cols} columns detected."
-                        log_to_file(debug_msg)
-                        task["logs"].append(debug_msg)
-                        
-                        # 1. Include Column Names
-                        content.extend([str(c) for c in df.columns])
-                        # 2. Include all row data
-                        for col in df.columns:
-                            content.extend(df[col].astype(str).tolist())
-                    except Exception as ex:
-                        task["logs"].append(f"[ERROR] Failed to parse Excel: {ex}")
+                        import openpyxl
+                        wb = openpyxl.load_workbook(upload_path, data_only=True)
+                        for sheet in wb.worksheets:
+                            for row in sheet.iter_rows(values_only=True):
+                                for cell in row:
+                                    if cell and isinstance(cell, str): content.append(cell)
+                    except ImportError:
+                        task["logs"].append("Error: 'openpyxl' library not found. Please install it on the server to use .xlsx files.")
+                    except Exception as e:
+                        task["logs"].append(f"Excel Error: {e}")
                 else:
                     try:
                         with open(upload_path, "r", encoding="utf-8") as f:
@@ -158,27 +150,17 @@ def run_background_scrape(session_id):
                         with open(upload_path, "r", encoding="latin-1") as f:
                             content = f.read().splitlines()
                 
-                # Robust Regex extraction
-                import re
-                url_pattern = r'https?://(?:www\.)?instagram\.com/(?:reels?|p)/[a-zA-Z0-9_\-]+/?'
+                links = [line.strip() for line in content if isinstance(line, str) and "instagram.com" in line]
                 
-                raw_links = []
-                for line in content:
-                    found = re.findall(url_pattern, str(line))
-                    raw_links.extend(found)
+                task["logs"].append(f"[BULK] Found {len(links)} links. Starting direct scrape...")
                 
-                links = list(dict.fromkeys(raw_links))
-                final_msg = f"[BULK] Found {len(links)} unique URLs among {len(content)} total data points."
-                log_to_file(final_msg)
-                task["logs"].append(final_msg)
+                from scraper_engine import scrape_multiple_urls
+                results = scrape_multiple_urls(links, logger=lambda m: task["logs"].append(m), cancel_event=cancel_evt)
                 
-                if len(links) == 0 and len(content) > 0:
-                    log_to_file(f"[DEBUG] First 5 cells: {content[:5]}")
-                
-                # HIGH-SPEED BULK MODE (One browser, batched fetches)
-                from scraper_engine import scrape_bulk_reels
-                results = scrape_bulk_reels(links, logger=lambda m: task["logs"].append(m), cancel_event=cancel_evt)
-                username = "bulk_results" # Placeholder for bulk
+                if results:
+                    username = results[0].get("author") or "bulk_user"
+                else:
+                    username = "bulk_user"
             else:
                 # Normal Single Scrape
                 results, username = scrape_since_reel(reel_url, logger=lambda m: task["logs"].append(m), cancel_event=cancel_evt)
@@ -383,12 +365,10 @@ def app_upload():
         return jsonify({"error": "No file selected"}), 400
 
     req_id = str(uuid.uuid4())
-    # Detect original extension and save correctly
-    original_ext = file.filename.split('.')[-1] if '.' in file.filename else "csv"
-    filepath = os.path.join(OUTPUTS_DIR, f"upload_{req_id}.{original_ext}")
+    filepath = os.path.join(OUTPUTS_DIR, f"upload_{req_id}.csv")
     file.save(filepath)
     
-    # Create task
+    # Create task (Matching old logic)
     cancel_event = threading.Event()
     with scrape_tasks_lock:
         scrape_tasks[req_id] = {
@@ -397,8 +377,7 @@ def app_upload():
             "username": username,
             "status": "queued",
             "event": cancel_event,
-            "upload_path": filepath, 
-            "logs": [f"[SYSTEM] File Uploaded: {file.filename}"]
+            "logs": [f"[SYSTEM] CSV Uploaded: {file.filename}"]
         }
     
     with queue_lock:
@@ -468,12 +447,8 @@ def app_stream():
                 
                 # 3. Break if finished (Match app logic line 291)
                 if task["status"] in ["completed", "error", "cancelled"]:
-                    # Ensure the app gets the final status before we close
-                    yield f"event: status\ndata: {task['status']}\n\n"
-                    
                     if task["status"] == "completed":
                         yield f"event: complete\ndata: {req_id}\n\n"
-                    
                     # Aggressively signal termination to stop app polling
                     yield "data: __FINISHED__\n\n"
                     break
