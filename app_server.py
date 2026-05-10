@@ -498,13 +498,13 @@ def start_cloudflared_tunnel():
             log_to_file("[Cloudflare Error] 'cloudflared' command not found. Please install it or add it to PATH.")
             return
 
-        log_to_file("[Cloudflare] Starting tunnel in quiet mode...")
+        log_to_file("[Cloudflare] Starting tunnel with full logging to tunnel.log...")
         try:
-            # Command for permanent named tunnel with HTTP2 protocol
+            # Command for permanent named tunnel with full logging HTTP2 protocol
             cmd = [
                 "cloudflared", "tunnel", "--protocol", "http2", "--ha-connections", "1",
-                "--loglevel", "warn", "--url", "http://localhost:5030",
-                "run", "f637317c-9221-477c-ab6b-efadd6e8bf0a"
+                "--loglevel", "info", "--logfile", "tunnel.log",
+                "--url", "http://localhost:5030", "run", "f637317c-9221-477c-ab6b-efadd6e8bf0a"
             ]
             process = subprocess.Popen(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, 
