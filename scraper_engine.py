@@ -125,9 +125,11 @@ def scrape_since_reel(reel_url, logger=None, cancel_event=None, auth_info=None):
             for attempt in range(1, 4):
                 try:
                     batch_results = page.evaluate("""async ({shortcodes, app_id, asbd_id, doc_id}) => {
-                        const results = await Promise.all(shortcodes.map(async (shortcode) => {
+                        const csrf = document.cookie.split('; ').find(row => row.startsWith('csrftoken='))?.split('=')[1] || "";
+                        const results = [];
+                        
+                        const fetchOne = async (shortcode) => {
                             try {
-                                const csrf = document.cookie.split('; ').find(row => row.startsWith('csrftoken='))?.split('=')[1] || "";
                                 const res = await fetch("https://www.instagram.com/graphql/query", {
                                     method: "POST",
                                     headers: { "Content-Type": "application/x-www-form-urlencoded", "X-CSRFToken": csrf, "X-IG-App-ID": app_id, "X-ASBD-ID": asbd_id },
@@ -150,8 +152,15 @@ def scrape_since_reel(reel_url, logger=None, cancel_event=None, auth_info=None):
                                     timestamp: m.taken_at_timestamp
                                 };
                             } catch (e) { return null; }
-                        }));
-                        return results.filter(r => r !== null);
+                        };
+
+                        // Process in parallel batches of 12
+                        for (let j = 0; j < shortcodes.length; j += 12) {
+                            const sub_chunk = shortcodes.slice(j, j + 12);
+                            const sub_res = await Promise.all(sub_chunk.map(sc => fetchOne(sc)));
+                            results.push(...sub_res.filter(r => r !== null));
+                        }
+                        return results;
                     }""", {"shortcodes": to_enrich, "app_id": APP_ID, "asbd_id": ASBD_ID, "doc_id": DOC_ID})
                     if batch_results: break # Success!
                 except Exception as e:
@@ -192,23 +201,122 @@ def scrape_since_reel(reel_url, logger=None, cancel_event=None, auth_info=None):
             if browser: browser.close()
             if playwright: playwright.stop()
         except: pass
-def scrape_reel(url):
-    """CLI helper to scrape a single reel."""
-    all_reels, username = scrape_since_reel(url)
-    if all_reels:
-        print(f"\n[SUCCESS] Scraped data for author: {username}")
-        import json
-        print(json.dumps(all_reels[0], indent=2))
-    else:
-        print("[FAIL] Could not scrape reel.")
+def scrape_reels_bulk(urls, logger=None, cancel_event=None):
+    """
+    Optimized for bulk uploads. Launches browser ONCE and processes URLs in chunks of 50.
+    Matches old code (insta_session_manager.py) logic exactly.
+    """
+    def log(m):
+        if logger: logger(m)
+        log_to_file(f"[Scraper] {m}")
 
-def scrape_profile(username):
-    """CLI helper to scrape all reels from a profile."""
-    # This uses a simple placeholder for now or can call the core logic
-    print(f"Scraping profile: {username} (Starting CLI mode)...")
-    url = f"https://www.instagram.com/{username}/reels/"
-    results, found_user = scrape_since_reel(url)
-    if results:
-        print(f"[DONE] Collected {len(results)} reels.")
-    else:
-        print("[FAIL] No results found.")
+    import re
+    from session_manager import get_next_session_with_status
+    
+    # Extract shortcodes
+    shortcodes = []
+    for url in urls:
+        match = re.search(r'/(?:reels?|p)/([^/?#&]+)', url)
+        if match: shortcodes.append(match.group(1))
+    
+    if not shortcodes: return [], None
+
+    playwright = None
+    browser = None
+    all_results = []
+    final_username = None
+
+    try:
+        current_session, wait_sec, is_sleeping = get_next_session_with_status()
+        if not current_session:
+            log(f"Waiting for session cooldown... ({int(wait_sec)}s)")
+            time.sleep(min(wait_sec, 30))
+            return [], None
+
+        log(f"Launching bulk browser for {len(shortcodes)} links using {os.path.basename(current_session)}")
+        playwright = sync_playwright().start()
+        browser = playwright.chromium.launch(headless=True)
+        context = browser.new_context(storage_state=current_session)
+        page = context.new_page()
+        
+        # Block heavy assets
+        page.route("**/*", lambda route: route.abort() if route.request.resource_type in ["image", "media", "font"] else route.continue_())
+
+        # Session Activation
+        page.goto("https://www.instagram.com/", wait_until="domcontentloaded", timeout=60000)
+
+        chunk_size = 100
+        for i in range(0, len(shortcodes), chunk_size):
+            if cancel_event and cancel_event.is_set(): break
+            
+            chunk = shortcodes[i:i + chunk_size]
+            log(f"Fetching batch {i//chunk_size + 1} ({len(chunk)} reels)...")
+
+            # High-performance evaluate block (matches old code 1:1)
+            batch_results = page.evaluate("""
+                async (sc_list) => {
+                    const csrf = document.cookie.split('; ').find(row => row.startsWith('csrftoken='))?.split('=')[1] || "";
+                    const results = [];
+                    
+                    const fetchOne = async (sc) => {
+                        try {
+                            const res = await fetch("https://www.instagram.com/graphql/query", {
+                                method: "POST",
+                                headers: {
+                                    "Content-Type": "application/x-www-form-urlencoded",
+                                    "X-CSRFToken": csrf,
+                                    "X-Instagram-AJAX": "1",
+                                    "X-Requested-With": "XMLHttpRequest",
+                                    "X-IG-App-ID": "936619743392459",
+                                    "X-ASBD-ID": "129477"
+                                },
+                                body: new URLSearchParams({ 
+                                    variables: JSON.stringify({ shortcode: sc }), 
+                                    doc_id: "8845758582119845" 
+                                }).toString(),
+                            });
+                            const json = await res.json();
+                            const m = json?.data?.xdt_shortcode_media;
+                            if (!m) return null;
+                            
+                            const v = m.video_view_count || 0;
+                            const p = m.video_play_count || 0;
+                            return {
+                                shortcode: m.shortcode,
+                                url: `https://www.instagram.com/reel/${m.shortcode}/`,
+                                author: m.owner?.username,
+                                likes: m.edge_media_preview_like?.count || m.edge_liked_by?.count || 0,
+                                comments: m.edge_media_to_parent_comment?.count || 0,
+                                views: v, plays: p,
+                                hook_percentage: p > 0 ? ((v / p) * 100).toFixed(2) : "0.00",
+                                date: m.taken_at_timestamp ? new Date(m.taken_at_timestamp * 1000).toISOString() : "",
+                                timestamp: m.taken_at_timestamp
+                            };
+                        } catch { return null; }
+                    };
+
+                    // Process in parallel sub-batches of 10 (Matching old code exactly)
+                    for (let j = 0; j < sc_list.length; j += 10) {
+                        const sub_chunk = sc_list.slice(j, j + 10);
+                        const sub_res = await Promise.all(sub_chunk.map(sc => fetchOne(sc)));
+                        results.push(...sub_res.filter(r => r !== null));
+                    }
+                    return results;
+                }
+            """, chunk)
+
+            if batch_results:
+                all_results.extend(batch_results)
+                if not final_username and batch_results:
+                    final_username = batch_results[0].get("author")
+
+        return all_results, final_username
+
+    except Exception as e:
+        log(f"Bulk scrape failed: {e}")
+        return all_results, final_username
+    finally:
+        try:
+            if browser: browser.close()
+            if playwright: playwright.stop()
+        except: pass
