@@ -357,6 +357,9 @@ def app_submit():
 
     # Auth Check
     success, msg = check_auth(username, device_id, sig)
+    if not success:
+        return jsonify({"error": msg}), 403
+
     # Queue the task
     req_id = str(uuid.uuid4())
     cancel_evt = threading.Event()
@@ -435,12 +438,10 @@ def app_upload():
 def app_status(req_id=None):
     if not req_id: req_id = request.args.get('id')
     
-    # Auth Check (Optional but good for security)
-    username = request.args.get('username')
-    device_id = request.args.get('device_id')
-    sig = request.args.get('sig')
-    if username and not check_auth(username, device_id, sig)[0]:
-        return jsonify({"error": "Unauthorized"}), 403
+    # Auth Check
+    success, msg = check_auth(username, device_id, sig)
+    if not success:
+        return jsonify({"error": msg}), 403
 
     with scrape_tasks_lock:
         task = scrape_tasks.get(req_id)
@@ -463,6 +464,14 @@ def app_status(req_id=None):
 @app.route('/stream', methods=['GET'])
 def app_stream():
     req_id = request.args.get('id')
+    username = request.args.get('username')
+    device_id = request.args.get('device_id')
+    sig = request.args.get('sig')
+    
+    # Auth Check
+    success, msg = check_auth(username, device_id, sig)
+    if not success:
+        return jsonify({"error": msg}), 403
     
     def generate():
         last_idx = 0
@@ -507,6 +516,14 @@ def app_stream():
 
 @app.route('/download/<req_id>', methods=['GET'])
 def get_results(req_id):
+    username = request.args.get('username')
+    device_id = request.args.get('device_id')
+    sig = request.args.get('sig')
+
+    # Auth Check
+    success, msg = check_auth(username, device_id, sig)
+    if not success:
+        return jsonify({"error": msg}), 403
     with scrape_tasks_lock:
         task = scrape_tasks.get(req_id)
         if not task or not task.get("results_path"):
@@ -524,6 +541,20 @@ def get_results(req_id):
 
 @app.route('/cancel/<req_id>', methods=['GET', 'POST'])
 def app_cancel(req_id):
+    # Support both JSON body and URL parameters
+    if request.method == 'POST':
+        data = request.json or {}
+    else:
+        data = request.args
+
+    username = data.get('username')
+    device_id = data.get('device_id')
+    sig = data.get('sig')
+
+    # Auth Check
+    success, msg = check_auth(username, device_id, sig)
+    if not success:
+        return jsonify({"error": msg}), 403
     with scrape_tasks_lock:
         task = scrape_tasks.get(req_id)
         if task:
