@@ -526,10 +526,13 @@ def get_results(req_id):
     device_id = request.args.get('device_id')
     sig = request.args.get('sig')
 
-    # Auth Check
-    success, msg = check_auth(username, device_id, sig)
-    if not success:
-        return jsonify({"error": msg}), 403
+    # Auth Check (Optional for downloads to ensure app compatibility)
+    # If parameters are provided, we check them. If not, we rely on the UUID's security.
+    if username and device_id and sig:
+        success, msg = check_auth(username, device_id, sig)
+        if not success:
+            return jsonify({"error": msg}), 403
+
     with scrape_tasks_lock:
         task = scrape_tasks.get(req_id)
         if not task or not task.get("results_path"):
