@@ -460,7 +460,9 @@ def app_status(req_id=None):
             from config import PUBLIC_URL
             # Use the secure PUBLIC_URL from config (ensures https works for Android)
             base_url = PUBLIC_URL.rstrip('/') if PUBLIC_URL else f"http://{request.host}"
-            response["download_url"] = f"{base_url}/download/{req_id}"
+            # Include auth params in the download URL so the app can authorize the request
+            auth_params = f"username={username}&device_id={device_id}&sig={sig}"
+            response["download_url"] = f"{base_url}/download/{req_id}?{auth_params}"
             response["filename"] = task.get("display_name", f"{req_id}.csv")
             
         return jsonify(response)
