@@ -439,6 +439,10 @@ def app_status(req_id=None):
     if not req_id: req_id = request.args.get('id')
     
     # Auth Check
+    username = request.args.get('username')
+    device_id = request.args.get('device_id')
+    sig = request.args.get('sig')
+    
     success, msg = check_auth(username, device_id, sig)
     if not success:
         return jsonify({"error": msg}), 403
